@@ -167,6 +167,9 @@ def print_manual() -> None:
     {BOLD}-c, --config{RESET} PATH
         Path to YAML configuration file (default: {YELLOW}~/.config/subnoryx/config.yaml{RESET}).
 
+    {BOLD}--show-config{RESET}
+        Print the resolved configuration (headers + masked API key status) and exit.
+
     {BOLD}-s, --silent{RESET}
         Silent mode. Suppresses banners and logs, outputting only raw subdomains
         for seamless terminal piping ({GREEN}subnoryx -d target.com -s | httpx{RESET}).
@@ -304,6 +307,50 @@ def init_or_load_config(config_path: Path) -> dict:
         _parse_config_fallback(raw_text, config)
 
     return config
+
+
+def mask_key(value: str) -> str:
+    """Mask an API key for safe display: show first/last 4 chars."""
+    if not value:
+        return "(empty)"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def print_config_summary(config: dict, config_path: Path) -> None:
+    """Print a safe, masked summary of the loaded configuration."""
+    print(f"\n{CYAN}{BOLD}SUBNORYX Configuration Summary{RESET}")
+    print(f"{DIM}{'─' * 55}{RESET}")
+    print(f"{BOLD}Config file :{RESET} {config_path}")
+    print(
+        f"{BOLD}Status      :{RESET} "
+        f"{'exists' if config_path.exists() else 'missing — using defaults'}"
+    )
+    print()
+
+    print(f"{BOLD}Headers{RESET} ({len(config['headers'])}):")
+    for k, v in config["headers"].items():
+        print(f"  {k}: {v}")
+    print()
+
+    print(f"{BOLD}API Keys{RESET}:")
+    active = 0
+    for k, v in config["api_keys"].items():
+        if v:
+            active += 1
+            print(f"  {GREEN}✓{RESET} {k:<16} {mask_key(v)}")
+    if active == 0:
+        print(
+            f"  {DIM}(none configured — using keyless OSINT engines: "
+            f"crt.sh, HackerTarget, AlienVault, Wayback, Anubis){RESET}"
+        )
+    else:
+        print(
+            f"\n  {GREEN}{active}{RESET} active / "
+            f"{len(config['api_keys'])} supported"
+        )
+    print()
 
 
 # ----------------------------------------------------------------------
@@ -780,7 +827,15 @@ async def run_engine(args: argparse.Namespace) -> None:
     global _VERBOSE
     _VERBOSE = bool(args.verbose)
 
-    config = init_or_load_config(Path(args.config).expanduser())
+    config_path = Path(args.config).expanduser()
+    config = init_or_load_config(config_path)
+
+    # -------- --show-config short-circuit --------
+    if args.show_config:
+        print_config_summary(config, config_path)
+        return
+    # ---------------------------------------------
+
     api_keys = config["api_keys"]
     # Baseline headers (config) → used by both passive client and probe client
     config_headers = dict(config["headers"])
@@ -1011,6 +1066,10 @@ def parse_args() -> argparse.Namespace:
         help=f"Path to config.yaml (default: {DEFAULT_CONFIG_PATH})",
     )
     config_group.add_argument(
+        "--show-config", action="store_true",
+        help="Print resolved configuration (headers + API key status) and exit",
+    )
+    config_group.add_argument(
         "-H", "--header", action="append", metavar="KEY:VALUE",
         help=(
             "Custom HTTP header for PROBING requests only "
@@ -1032,7 +1091,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if not args.domain and not args.input:
+    if not args.domain and not args.input and not args.show_config:
         parser.print_help()
         sys.exit(1)
     return args
