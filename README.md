@@ -1,15 +1,13 @@
 <div align="center">
+<pre>
+   _____ __  ______  _   ______  ______  ___  __
+  / ___// / / / __ )/ | / / __ \/ __ \ \/ / |/ /
+  \__ \/ / / / __  /  |/ / / / / /_/ /\  /|   /
+ ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
+/____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
+</pre>
 
-```text
-███████╗██╗   ██╗██████╗ ███╗   ██╗ ██████╗ ██████╗ ██╗   ██╗██╗  ██╗
-██╔════╝██║   ██║██╔══██╗████╗  ██║██╔═══██╗██╔══██╗╚██╗ ██╔╝╚██╗██╔╝
-███████╗██║   ██║██████╔╝██╔██╗ ██║██║   ██║██████╔╝ ╚████╔╝  ╚███╔╝ 
-╚════██║██║   ██║██╔══██╗██║╚██╗██║██║   ██║██╔══██╗  ╚██╔╝   ██╔██╗ 
-███████║╚██████╔╝██████╔╝██║ ╚████║╚██████╔╝██║  ██║   ██║   ██╔╝ ██╗
-╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
-```
-
-**Fast Async Passive Subdomain Enumerator & Recon Engine**
+**SUBNORYX v1.0.0** — Fast Async Passive Subdomain Enumerator & Recon Engine
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green)](./LICENSE)
@@ -17,7 +15,6 @@
 [![Async](https://img.shields.io/badge/asyncio-httpx%20%2B%20aiodns-magenta)]()
 
 *~By Kalmux*
-
 </div>
 
 ---
@@ -194,7 +191,7 @@ subnoryx [-h] [-d DOMAIN] [-i INPUT] [-r] [--probe] [-t THREADS]
 
 ### Example output
 
-```
+```text
    _____ __  ______  _   ______  ______  ___  __
   / ___// / / / __ )/ | / / __ \/ __ \ \/ / |/ /
   \__ \/ / / / __  /  |/ / / / / /_/ /\  /|   /
@@ -422,7 +419,7 @@ subnoryx --show-config
 
 One subdomain per line, sorted, deduplicated:
 
-```
+```text
 api.example.com
 mail.example.com
 vpn.example.com
@@ -468,7 +465,7 @@ One subdomain per line — designed for `| httpx`, `| nuclei`, `| katana`, etc.
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │                      subnoryx.py                         │
 ├──────────────────────────────────────────────────────────┤
@@ -616,7 +613,7 @@ Distributed under the **GNU General Public License v3.0**.
 
 See [`LICENSE`](./LICENSE) for the full text.
 
-```
+```text
 SUBNORYX is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
