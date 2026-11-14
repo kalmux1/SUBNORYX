@@ -1,17 +1,18 @@
 <div align="center">
 
-```
-                           _____ __  ______  _   ______  ______  ___  __
-                          / ___// / / / __ )/ | / / __ \/ __ \ \/ / |/ /
-                          \__ \/ / / / __  /  |/ / / / / /_/ /\  /|   /
-                         ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
-                        /____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
+```text
+███████╗██╗   ██╗██████╗ ███╗   ██╗ ██████╗ ██████╗ ██╗   ██╗██╗  ██╗
+██╔════╝██║   ██║██╔══██╗████╗  ██║██╔═══██╗██╔══██╗╚██╗ ██╔╝╚██╗██╔╝
+███████╗██║   ██║██████╔╝██╔██╗ ██║██║   ██║██████╔╝ ╚████╔╝  ╚███╔╝ 
+╚════██║██║   ██║██╔══██╗██║╚██╗██║██║   ██║██╔══██╗  ╚██╔╝   ██╔██╗ 
+███████║╚██████╔╝██████╔╝██║ ╚████║╚██████╔╝██║  ██║   ██║   ██╔╝ ██╗
+╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
 ```
 
-**SUBNORYX** — Fast Async Passive Subdomain Enumerator & Recon Engine
+**Fast Async Passive Subdomain Enumerator & Recon Engine**
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-GPL--2.0-green)](./LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-green)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-cyan)]()
 [![Async](https://img.shields.io/badge/asyncio-httpx%20%2B%20aiodns-magenta)]()
 
@@ -434,7 +435,7 @@ Full structured output — subdomains, resolved IPs, and HTTP probe details:
 ```json
 {
   "version": "1.0.0",
-  "license": "GPL-2.0",
+  "license": "GPL-3.0",
   "targets": ["example.com"],
   "discovered_count": 247,
   "resolved_count": 182,
@@ -611,14 +612,15 @@ code style (async, bounded concurrency, retries via `http_get_with_retry`).
 
 ## License
 
-Distributed under the **GNU General Public License v2.0**.
+Distributed under the **GNU General Public License v3.0**.
 
 See [`LICENSE`](./LICENSE) for the full text.
 
 ```
-SUBNORYX is free software; you can redistribute it and/or modify
+SUBNORYX is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
-the Free Software Foundation; version 2 of the License.
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
 SUBNORYX is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -639,13 +641,5 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 <div align="center">
 
 **⚡ Happy hunting. Stay in scope. ⚡**
-
-```
-   _____ __  ______  _   ______  ______  ___  __
-  / ___// / / / __ )/ | / / __ \/ __ \ \/ / |/ /
-  \__ \/ / / / __  /  |/ / / / / /_/ /\  /|   /
- ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
-/____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
-```
 
 </div>
