@@ -7,11 +7,11 @@
 /____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
 </pre>
 
-**SUBNORYX v1.0.0** — Fast Async Passive Subdomain Enumerator & Recon Engine
+**SUBNORYX v1.2.0** — Fast Async Subdomain Enumerator & Recon Engine
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-cyan)]()
+[![Version](https://img.shields.io/badge/version-1.2.0-cyan)]()
 [![Async](https://img.shields.io/badge/asyncio-httpx%20%2B%20aiodns-magenta)]()
 
 *~By Kalmux*
@@ -19,14 +19,24 @@
 
 ---
 
+> ⚠️ **ETHICAL USE NOTICE**
+> SUBNORYX is provided for **authorized security testing, bug bounty programs,
+> and education only**. Only use it against systems you own or have explicit
+> written permission to test. Unauthorized reconnaissance may violate laws such
+> as the CFAA (US), CMA (UK), or equivalent legislation elsewhere. The author
+> assumes no liability for misuse.
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)
+- [What's New in v1.2.0](#whats-new-in-v120)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Two-Stage Workflow](#two-stage-workflow)
 - [Quick Start](#quick-start)
-- [Usage](#usage)
 - [CLI Reference](#cli-reference)
 - [Configuration](#configuration)
 - [OSINT Sources](#osint-sources)
@@ -44,43 +54,60 @@
 ## Overview
 
 **SUBNORYX** is an asynchronous OSINT recon framework for bug bounty hunters
-and penetration testers. Unlike traditional scrapers that rely on fragile HTML
-parsing or blocking multiprocessing models, SUBNORYX queries high-speed public
-APIs, Certificate Transparency logs, and passive DNS repositories concurrently —
-then optionally resolves and probes the results, all without leaving a Safe-Harbor
-header behind unless you explicitly ask for one.
+and penetration testers. It queries high-speed public APIs, Certificate
+Transparency logs, and passive DNS repositories concurrently, then optionally
+resolves and probes the results.
 
 Built on `asyncio` + `httpx`, it is designed to be:
 
-- **Fast** — concurrent queries to every OSINT source in parallel.
+- **Fast** — concurrent queries to every configured OSINT source.
 - **Quiet** — zero headers injected by default.
 - **Composable** — pipe-friendly output for `httpx`, `nuclei`, `katana`, etc.
-- **Extensible** — clean separation between discovery, resolution, and probing.
+- **Staged** — discovery and probing can be run as separate passes.
+
+---
+
+## What's New in v1.2.0
+
+- 🗂️ **Two-stage workflow** — split discovery and probing across invocations.
+  Run `-d example.com -o subnoryx.txt` once, then feed the file back with
+  `-i subnoryx.txt --probe` to probe only those hosts.
+- 🎯 **`--match-codes`** — filter probe results to specific HTTP status
+  codes (`--match-codes 200,301,403`). Applied to `-o` and `--json` output.
+- 🔇 **Quiet by default** — the subdomain list is no longer printed to the
+  terminal. You get a concise summary instead. Use `--show-list` to opt in
+  to the full list.
+- 🧩 **`--probe-only`** — explicit subdomain-input mode. Skips discovery
+  entirely, treating every input line as a subdomain to probe.
+- 🌐 **Full source registry** — all 40 API-key slots now have fetch
+  implementations (plus 3 keyless-only sources). Keyed sources run only
+  when their key is configured.
+- 🐛 **Assorted fixes** — unified GPL-3.0 license, friendlier error for
+  missing `httpx`, `--threads` validation, probe URL now reflects final
+  redirect target, sensitive headers masked in `--show-config`, and more.
+
+See [`CHANGELOG`](#) for the complete list.
 
 ---
 
 ## Features
 
 - ⚡ **Asynchronous engine** — `asyncio` + `httpx`, no thread-lock overhead.
-- 🕵️ **Zero default footprint** — no Safe-Harbor header is injected unless you
-  explicitly pass `-H`. Passive API calls use only your configured `User-Agent`.
-- 🌐 **Multi-domain scope** — pass a single target with `-d` or a scope file
-  with `-i scope.txt`.
-- 🔍 **Async DNS resolution** — filter `NXDOMAIN` results with `aiodns`
-  (automatic fallback to `socket.getaddrinfo` if missing).
-- 🌐 **Active HTTP probing** — `--probe` returns live URLs, HTTP status codes,
-  and HTML page titles.
-- 🔑 **40+ API integrations** — Shodan, Censys, VirusTotal, SecurityTrails,
-  FOFA, Chaos, urlscan, CertSpotter, and more (config template auto-generated).
-- 🆓 **Keyless-by-default** — works out of the box with crt.sh, HackerTarget,
-  AlienVault, Wayback, and Anubis — no API key required.
-- 🔁 **Transient-failure retries** — 429/5xx and network errors are retried
+- 🕵️ **Zero default footprint** — no Safe-Harbor header unless you pass `-H`.
+- 🌐 **Multi-domain scope** — single target (`-d`) or scope file (`-i`).
+- 🔍 **Async DNS resolution** — `aiodns` with `socket.getaddrinfo` fallback.
+- 🌐 **Active HTTP probing** — live URLs (final after redirects), status
+  codes, and HTML page titles.
+- 🎯 **Status-code filtering** — keep only the codes you care about.
+- 🔑 **40 keyed + 3 keyless sources** — conditional dispatch: sources run
+  only when their key is present.
+- 🔁 **Transient-failure retries** — 429/5xx and network errors retried
   with jittered backoff.
-- 🧾 **Multiple output sinks** — plain text (`-o`), JSON (`--json`), stdout
-  piping (`-s`).
-- ⚙️ **Config inspector** — `--show-config` prints the resolved configuration
-  with API keys **masked** (`abcd…wxyz`), safe to paste anywhere.
-- 🎨 **Polished CLI** — animated spinners (TTY-aware), colorized output,
+- 🧾 **Multiple output sinks** — plain text (`-o`), JSON (`--json`), silent
+  stdout (`-s`), and formatted list (`--show-list`).
+- ⚙️ **Config inspector** — `--show-config` masks API keys and sensitive
+  headers.
+- 🎨 **Polished CLI** — TTY-aware spinners, `NO_COLOR` support,
   comprehensive `--man` page.
 
 ---
@@ -90,9 +117,9 @@ Built on `asyncio` + `httpx`, it is designed to be:
 | Dependency | Version | Notes |
 |---|---|---|
 | **Python** | ≥ 3.9 | `from __future__ import annotations` allows 3.9 support |
-| **httpx** | ≥ 0.23 | Required — async HTTP client |
-| **aiodns** | ≥ 2.0 | Optional — high-speed async DNS; falls back to `socket` |
-| **PyYAML** | ≥ 5.0 | Optional — proper YAML config parsing; falls back to naive parser |
+| **httpx** | ≥ 0.23 | **Required** |
+| **aiodns** | ≥ 2.0 | Optional — faster async DNS; falls back to `socket` |
+| **PyYAML** | ≥ 5.0 | Optional — proper YAML parsing; falls back to naive parser |
 
 `aiodns` and `PyYAML` are optional but **strongly recommended**.
 
@@ -108,196 +135,199 @@ cd SUBNORYX
 chmod +x install.sh
 ./install.sh
 source ~/.bashrc      # or ~/.zshrc
-```
-
 The installer:
 
-1. Validates `python3` ≥ 3.9 and locates `subnoryx.py`.
-2. Runs `chmod +x subnoryx.py`.
-3. Offers to `pip install --user httpx aiodns pyyaml` if any are missing.
-4. Detects your shell (`bash`/`zsh`) and appends an **idempotent alias block**
-   to `~/.bashrc` or `~/.zshrc`:
-   ```bash
-   # >>> SUBNORYX alias >>>
-   alias subnoryx='python3 "/home/user/SUBNORYX/subnoryx.py"'
-   # <<< SUBNORYX alias <<<
-   ```
-5. Optionally creates a `/usr/local/bin/subnoryx` symlink (for scripts/CI
-   where aliases don't expand).
-6. Reloads the rc file automatically when run via `source ./install.sh`.
+Validates python3 ≥ 3.9 and locates subnoryx.py.
 
-**Installer flags:**
+Runs chmod +x subnoryx.py.
 
-```bash
+Offers to pip install --user httpx aiodns pyyaml if any are missing
+(detects PEP 668 externally-managed environments and suggests venv).
+
+Appends an idempotent alias block to ~/.bashrc or ~/.zshrc.
+
+Optionally creates /usr/local/bin/subnoryx symlink.
+
+Reloads your rc file when run via source ./install.sh.
+
+Installer flags:
+
+bash
 ./install.sh             # interactive install
 ./install.sh --no-deps   # skip pip dependency prompt
+./install.sh --yes       # auto-confirm all prompts (CI-friendly)
 ./install.sh --uninstall # remove alias block + symlink
 ./install.sh -h          # installer help
-```
-
-### Manual
-
-```bash
+Manual
+bash
 git clone https://github.com/kalmux1/SUBNORYX.git
 cd SUBNORYX
 chmod +x subnoryx.py
 pip install --user httpx aiodns pyyaml
 
-# Option A — alias
+# Alias
 echo "alias subnoryx='python3 $(pwd)/subnoryx.py'" >> ~/.bashrc
 source ~/.bashrc
 
-# Option B — symlink
+# Or symlink
 sudo ln -sf "$(pwd)/subnoryx.py" /usr/local/bin/subnoryx
+Two-Stage Workflow
+SUBNORYX supports splitting recon across two independent invocations:
 
-# Option C — run directly
-python3 subnoryx.py --man
-```
+Stage 1 — Discovery only
+bash
+subnoryx -d example.com -r -o subnoryx.txt
+Queries all configured OSINT sources.
 
----
+Resolves discovered hosts via async DNS (-r).
 
-## Quick Start
+Saves the live subdomains to subnoryx.txt.
 
-```bash
-# Inspect configuration (safe to paste — keys are masked)
+Prints only a summary (not the full list).
+
+Stage 2 — Probe only
+bash
+subnoryx -i subnoryx.txt --probe --match-codes 200,301,403 -o live.txt
+Skips discovery entirely (auto-detected subdomain list input).
+
+Probes each host over HTTPS, then HTTP.
+
+Keeps only status codes 200, 301, 403.
+
+Saves the filtered list to live.txt.
+
+Why two stages?
+Faster iterations — re-probe without hitting OSINT APIs again.
+
+API quota — stay under rate limits by not re-querying every source.
+
+Repeatable probing — same discovery run, different probe criteria
+(--match-codes 200 vs --match-codes 200,301).
+
+Auditable — the file from Stage 1 is your discovery record.
+
+Input mode detection
+When you run -i FILE --probe, SUBNORYX auto-detects the input mode:
+
+Input content	Detected as	Behaviour
+example.com, foo.org (different apexes)	apex list	enumerates each
+api.example.com, mail.example.com (shared suffix)	subdomain list	probes directly
+api.example.com (single line)	apex list (conservative)	enumerate
+Anything with --probe-only	subdomain list (forced)	probe directly
+If auto-detection gets it wrong, use --probe-only to force subdomain
+mode, or -d <apex> to force apex mode.
+
+Quick Start
+bash
+# Inspect config (keys + sensitive headers masked)
 subnoryx --show-config
 
 # Full manual
 subnoryx --man
 
-# Minimal scan — keyless OSINT, no resolution
+# Minimal discovery (summary only)
 subnoryx -d example.com
 
-# Discovery + DNS resolution + HTTP probing
+# Full one-shot pipeline (discovery + resolve + probe, summary only)
 subnoryx -d example.com -r --probe
 
-# Multi-domain scope file, save everything
-subnoryx -i scope.txt -r --probe -o subs.txt --json subs.json -v
+# Two-stage: save, then filter
+subnoryx -d example.com -r -o subnoryx.txt
+subnoryx -i subnoryx.txt --probe --match-codes 200,301,403 -o live.txt
 
-# Pipe straight into httpx (silent mode)
+# Show the list in-terminal
+subnoryx -i subnoryx.txt --probe --show-list
+
+# Pipe raw results (silent mode unchanged)
 subnoryx -d example.com -r -s | httpx -silent -title -tech-detect
-```
+CLI Reference
+text
+subnoryx [-h] [-d DOMAIN] [-i INPUT] [-r] [--probe] [--probe-only]
+         [--match-codes CODES] [-t THREADS] [--resolvers RESOLVERS]
+         [-o OUTPUT] [--json FILE] [--show-list] [-c CONFIG]
+         [--show-config] [-H KEY:VALUE] [-s] [-v] [-V] [--man]
+Target Selection
+Flag	Description
+-d, --domain DOMAIN	Single target. Apex by default; subdomain with --probe-only
+-i, --input FILE	Scope file (apex domains to enumerate, or subdomains with --probe)
+Resolution, Probing & Filtering
+Flag	Description
+-r, --resolve	Filter dead subdomains via async DNS
+--probe	Probe hosts for HTTP/HTTPS status & titles
+--probe-only	Skip discovery; treat -d/-i as subdomains to probe. Implies --probe
+--match-codes CODES	Comma-separated HTTP codes to keep during probing (e.g. 200,301,403). Filters -o and --json output. Without this flag, all responsive codes are kept
+-t, --threads N	Concurrency limit for resolution/probing (default: 100, min: 1)
+--resolvers LIST	Comma-separated DNS resolvers (default: 1.1.1.1,8.8.8.8,9.9.9.9). Requires aiodns
+Configuration & Output
+Flag	Description
+-o, --output FILE	Save filtered subdomain list (plain text)
+--json FILE	Save full structured results (subdomains + IPs + probe details)
+--show-list	Print the full subdomain list to terminal (default: suppressed)
+-c, --config PATH	Path to config.yaml (default: ~/.config/subnoryx/config.yaml)
+--show-config	Print resolved config with masked API keys and sensitive headers
+-H, --header KEY:VALUE	Custom HTTP header for probing only. Repeatable
+-s, --silent	Silent mode — raw subdomains on stdout for piping
+-v, --verbose	Verbose per-source logs on stderr
+-V, --version	Print version and exit
+--man	Print full built-in manual
+Environment
+Variable	Effect
+NO_COLOR	Any non-empty value disables ANSI colour output
+Output Behaviour
+Default (interactive): summary only. No subdomain list printed.
 
----
+text
+─── SUBNORYX Summary ───
+  Discovered:        247
+  Resolved:          182
+  Responsive:        164
 
-## Usage
+  (subdomain list suppressed — use --show-list to print, -o FILE to save,
+   or -s for raw pipe output)
+With --show-list: summary + formatted list.
 
-```
-subnoryx [-h] [-d DOMAIN] [-i INPUT] [-r] [--probe] [-t THREADS]
-         [--resolvers RESOLVERS] [-o OUTPUT] [--json FILE]
-         [-c CONFIG] [--show-config] [-H KEY:VALUE] [-s] [-v] [-V]
-         [--man]
-```
+With -o FILE / --json FILE: files are written regardless of --show-list.
 
-### Example output
+With -s: raw subdomains, one per line, on stdout — the pipe contract
+is unchanged from previous versions.
 
-```text
-   _____ __  ______  _   ______  ______  ___  __
-  / ___// / / / __ )/ | / / __ \/ __ \ \/ / |/ /
-  \__ \/ / / / __  /  |/ / / / / /_/ /\  /|   /
- ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
-/____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
-SUBNORYX v1.0.0 — Async Subdomain Recon Engine
-                 ~By Kalmux
+Configuration
+SUBNORYX auto-creates ~/.config/subnoryx/config.yaml on first run
+(except during --show-config, which is read-only):
 
-[i] Loaded Targets:      1 domain(s)
-[i] Probe Headers:       User-Agent
-[i] Active API Keys:     None (using free keyless OSINT engines)
-
-⠹ Querying OSINT sources for example.com...
-[✓] Discovered 247 unique passive subdomains for example.com
-
-[✓] Total Unique Passive Subdomains Discovered: 247
-⠼ Resolving 247 subdomains via async DNS...
-[✓] DNS Resolution complete: 182/247 live hosts verified.
-⠴ Probing 182 hosts for active HTTP/HTTPS services...
-[✓] HTTP Probing complete: 164 active web servers responding.
-
---- SUBNORYX Final Results (182) ---
-  api.example.com [93.184.216.34] -> https://api.example.com [200] [API Gateway]
-  mail.example.com [93.184.216.34] -> https://mail.example.com [200] [Webmail Login]
-  vpn.example.com [93.184.216.34] -> https://vpn.example.com [403]
-  ...
-```
-
----
-
-## CLI Reference
-
-### Target Selection
-
-| Flag | Description |
-|---|---|
-| `-d, --domain DOMAIN` | Single target apex domain (e.g., `example.com`) |
-| `-i, --input FILE` | Scope file — one domain per line, `#` comments supported |
-
-### Resolution & Probing
-
-| Flag | Description |
-|---|---|
-| `-r, --resolve` | Filter dead subdomains via async DNS (`aiodns` / `socket`) |
-| `--probe` | Probe live hosts for HTTP/HTTPS status codes and page titles |
-| `-t, --threads N` | Concurrency limit for resolution/probing (default: `100`) |
-| `--resolvers LIST` | Comma-separated DNS resolvers (default: `1.1.1.1,8.8.8.8,9.9.9.9`) — requires `aiodns` |
-
-### Configuration & Output
-
-| Flag | Description |
-|---|---|
-| `-o, --output FILE` | Save cleaned, unique subdomain list (plain text) |
-| `--json FILE` | Save full results (subdomains + IPs + probe info) as JSON |
-| `-c, --config PATH` | Path to `config.yaml` (default: `~/.config/subnoryx/config.yaml`) |
-| `--show-config` | Print resolved config with **masked** API keys and exit |
-| `-H, --header KEY:VALUE` | Custom HTTP header for **probing only** (e.g., `-H 'X-Bug-Bounty: HackerOne-user'`) |
-| `-s, --silent` | Output only raw subdomains — perfect for piping |
-| `-v, --verbose` | Verbose output on **stderr** (source timing, retries, failures) |
-| `-V, --version` | Print version and exit |
-| `--man` | Print the full built-in manual |
-
-### Header Precedence
-
-| Header set | Applies to | Override via |
-|---|---|---|
-| `headers:` in config | Passive API calls + probing | Edit `~/.config/subnoryx/config.yaml` |
-| `-H KEY:VALUE` on CLI | **Probing only** | Repeated `-H` flags |
-
-> **Why probing only?** Sending `X-Bug-Bounty` to `crt.sh` or VirusTotal is
-> unusual and can leak your identity to third-party aggregators. If you want
-> custom headers on API calls, put them in the config file's `headers:` block.
-
----
-
-## Configuration
-
-SUBNORYX auto-creates `~/.config/subnoryx/config.yaml` on first run:
-
-```yaml
-# SUBNORYX Configuration File (v1.0.0)
-# Leave API keys empty ("") to use keyless OSINT engines
-
+yaml
 api_keys:
-  alienvault: ""
   certspotter: ""
   chaos: ""
-  censys: ""
-  fofa: ""
-  securitytrails: ""
-  shodan: ""
   urlscan: ""
   virustotal: ""
-  # ... 40 keys total
+  # ... 40 keys total; leave empty to disable
 
 headers:
   User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ..."
-```
+Behaviour:
 
-### Inspecting your config
+Empty key → the corresponding keyed source is skipped at runtime.
+You'll see [v] Skipping <source> (no API key configured) under -v.
 
-```bash
+Populated key → the source is queried on every scan.
+
+Keyless sources (crtsh, anubis, wayback, plus alienvault and
+hackertarget which work with or without a key) always run.
+
+Composite keys
+Some providers require two-part keys, colon-separated:
+
+Source	Format	Where to get it
+Censys	API_ID:API_SECRET	https://search.censys.io/account/api
+FOFA	email:api_key	https://fofa.info/personalData
+A single-value key for these sources is silently skipped with a vlog
+warning (visible under -v).
+
+Inspecting your config
+bash
 subnoryx --show-config
-```
-
-```
+text
 SUBNORYX Configuration Summary
 ───────────────────────────────────────────────────────
 Config file : /home/kalmux/.config/subnoryx/config.yaml
@@ -311,63 +341,73 @@ API Keys:
   ✓ urlscan          1234…5678
 
   2 active / 40 supported
-```
+Masking rules:
 
-Full key values are **never** printed — masked to `first4…last4` for safe
-sharing in screenshots and bug reports.
+API keys masked to first4…last4 (or **** if ≤ 8 chars).
 
-### Using a custom config path
+Header values whose name matches
+auth|token|key|secret|cookie|pass|credential|session are masked.
+Other headers (User-Agent, Accept, etc.) are shown in full.
 
-```bash
-subnoryx -c /path/to/engagement-keys.yaml -d example.com
-```
+OSINT Sources
+SUBNORYX registers 43 fetch implementations — 40 keyed providers plus
+3 keyless-only sources. Keyless sources always run. Keyed sources run
+only when their key is configured.
 
----
+Keyless (5) — always active
+Source	Type
+crt.sh	Certificate Transparency logs
+HackerTarget	Passive DNS / host search
+AlienVault OTX	Passive DNS (accepts a key for higher rate limit)
+Wayback Machine	Archived URLs
+Anubis	Passive DNS (best-effort)
+Keyed (38) — active only when key is set
+Alphabetical list of providers with implementations:
 
-## OSINT Sources
+text
+bevigil      bufferover   builtwith    c99          censys
+certspotter  chaos        chinaz       digitalyama  dnsdb
+dnsdumpster  dnsrepo      domainsproject  driftnet  fofa
+fullhunt     github       intelx       leakix       merklemap
+netlas       onyphe       profundis    pugrecon     quake
+reconeeer    redhuntlabs  robtex       rsecloud     securitytrails
+shodan       submd        threatbook   urlscan      virustotal
+whoisxmlapi  windvane     zoomeyeapi
+⚠️ Reliability note. All 43 fetchers are structurally complete and
+wired into the dispatch registry. However, provider APIs change frequently
+and some endpoints may be outdated, require paid tiers, or use response
+shapes that differ from the implementation. A broken source never
+crashes the scan — every fetcher is wrapped in try/except and returns
+an empty set on failure. Run with -v to see which sources succeed for
+your environment.
 
-### Keyless (always active)
+Finding out which sources work
+bash
+subnoryx -d example.com -v 2>&1 | grep -E "failed|Skipping"
+Sources that do not appear in the failure log are working.
 
-| Source | Type |
-|---|---|
-| **crt.sh** | Certificate Transparency logs |
-| **HackerTarget** | Passive DNS / host search |
-| **AlienVault OTX** | Passive DNS |
-| **Wayback Machine** | Archived URLs (hostname extraction) |
-| **Anubis** | Passive DNS *(best-effort; endpoint is intermittent)* |
+Examples
+1. Discovery only — save results
+bash
+subnoryx -d example.com -r -o subnoryx.txt
+Output is a summary; subnoryx.txt contains the live subdomains.
 
-### Keyed (activate via `api_keys:` in config)
+2. Two-stage recon — filter for interesting codes
+bash
+# Stage 1
+subnoryx -d example.com -r -o subnoryx.txt
 
-| Source | Config key | Auth style |
-|---|---|---|
-| VirusTotal | `virustotal` | `x-apikey` header |
-| urlscan.io | `urlscan` | `API-Key` header |
-| CertSpotter | `certspotter` | `Authorization: Bearer <key>` |
-| Chaos (ProjectDiscovery) | `chaos` | `Authorization: <key>` |
+# Stage 2 — keep only 200/301/403
+subnoryx -i subnoryx.txt --probe --match-codes 200,301,403 -o live.txt
+3. Force subdomain-input mode
+bash
+# Single subdomain, direct probe
+subnoryx -d api.example.com --probe-only --match-codes 200
 
-Plus 36 more keys are pre-registered in the config template — the
-`fetch_*` implementations for those sources can be added incrementally
-without touching the CLI or config loader.
-
----
-
-## Examples
-
-### 1. Quick passive recon
-
-```bash
-subnoryx -d example.com
-```
-
-### 2. Full pipeline — discovery → resolution → probing
-
-```bash
-subnoryx -d example.com -r --probe -t 200
-```
-
-### 3. Multi-domain scope from a file
-
-```bash
+# Force subdomain-input on an ambiguous file
+subnoryx -i scope.txt --probe-only --match-codes 200
+4. Multi-domain discovery
+bash
 cat > scope.txt <<EOF
 # Bug bounty scope
 example.com
@@ -376,244 +416,244 @@ https://staging.example.org/path
 *.wildcard.example.net
 EOF
 
-subnoryx -i scope.txt -r --probe -o live.txt --json results.json
-```
-
-All four lines normalise correctly — URLs are reduced to hostnames and
-`*.` prefixes are stripped.
-
-### 4. Pipe into httpx
-
-```bash
+subnoryx -i scope.txt -r -o results.txt
+5. Pipe into httpx
+bash
 subnoryx -d example.com -r -s | httpx -silent -title -tech-detect -sc
-```
+-s emits one raw subdomain per line — the pipe contract is unchanged.
 
-`-s` suppresses banner/spinner, emitting one subdomain per line — perfect
-for downstream tooling.
-
-### 5. Add a Safe-Harbor header to probing only
-
-```bash
+6. Show the list in-terminal
+bash
+subnoryx -d example.com -r --probe --show-list
+7. Safe-Harbor headers on probing only
+bash
 subnoryx -d example.com --probe \
   -H "X-Bug-Bounty: HackerOne-kalmux" \
   -H "X-Contact: kalmux@example.com"
-```
+8. Filter + JSON export
+bash
+subnoryx -i subnoryx.txt --probe --match-codes 200,403 --json results.json
+The JSON probed map and subdomains array both reflect the filter.
 
-### 6. Verbose + custom resolvers
+Output Formats
+Plain text (-o subs.txt)
+One subdomain per line, sorted, deduplicated. When combined with --probe,
+only responsive hosts are written (and only --match-codes matches if
+set).
 
-```bash
-subnoryx -d example.com -r --resolvers 1.1.1.1,9.9.9.9 -v
-```
-
-### 7. Inspect config before scanning
-
-```bash
-subnoryx --show-config
-```
-
----
-
-## Output Formats
-
-### Plain text (`-o subs.txt`)
-
-One subdomain per line, sorted, deduplicated:
-
-```text
+text
 api.example.com
 mail.example.com
 vpn.example.com
-```
+JSON (--json results.json)
+Structured output including discovery, resolution, probe, and filter state:
 
-### JSON (`--json results.json`)
-
-Full structured output — subdomains, resolved IPs, and HTTP probe details:
-
-```json
+json
 {
-  "version": "1.0.0",
+  "version": "1.2.0",
   "license": "GPL-3.0",
-  "targets": ["example.com"],
-  "discovered_count": 247,
-  "resolved_count": 182,
-  "probed_count": 164,
-  "subdomains": ["api.example.com", "mail.example.com", "..."],
+  "input_mode": "subdomains",
+  "targets": ["api.example.com", "mail.example.com"],
+  "match_codes": [200, 301, 403],
+  "discovered_count": 2,
+  "resolved_count": 2,
+  "responsive_count": 2,
+  "final_count": 1,
+  "subdomains": ["mail.example.com"],
+  "discovered": ["api.example.com", "mail.example.com"],
   "resolved": {
     "api.example.com": ["93.184.216.34"],
     "mail.example.com": ["93.184.216.34"]
   },
   "probed": {
-    "api.example.com": {
-      "url": "https://api.example.com",
+    "mail.example.com": {
+      "url": "https://mail.example.com/",
       "status": 200,
-      "title": "API Gateway"
-    },
-    "vpn.example.com": {
-      "url": "https://vpn.example.com",
-      "status": 403,
-      "title": ""
+      "title": "Webmail Login"
     }
   }
 }
-```
+Key fields:
 
-### Silent stdout (`-s`)
+Field	Meaning
+input_mode	"apex" (enumerate) or "subdomains" (direct probe)
+match_codes	null if no filter applied, else the code list
+discovered	Everything discovered, unfiltered
+probed	Responsive hosts after --match-codes filter
+subdomains	Final filtered list (matches -o output)
+Silent stdout (-s)
+One subdomain per line on stdout, no banner/spinner/logs. Designed for
+| httpx, | nuclei, | katana, etc.
 
-One subdomain per line — designed for `| httpx`, `| nuclei`, `| katana`, etc.
+Terminal formatted list (--show-list)
+Adds a colourised block after the summary:
 
----
+text
+─── Subdomain List (3) ───
+  api.example.com [93.184.216.34] -> https://api.example.com [200] [API Gateway]
+  mail.example.com [93.184.216.34] -> https://mail.example.com [200] [Webmail Login]
+  vpn.example.com [93.184.216.34] -> https://vpn.example.com [403]
+Architecture
+text
+┌──────────────────────────────────────────────────────────────┐
+│                        subnoryx.py                           │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐      │
+│  │  Discovery    │  │  Resolution   │  │   Probing    │      │
+│  │  (parallel    │→ │  (async DNS)  │→ │  (HTTP/HTTPS)│      │
+│  │   N fetchers) │  │               │  │  + filter    │      │
+│  └───────────────┘  └───────────────┘  └──────────────┘      │
+│        │                    │                  │             │
+│        ▼                    ▼                  ▼             │
+│  40 keyed + 3           aiodns              httpx            │
+│  keyless sources        (or socket)         (verify=False)   │
+│                                                              │
+│  Conditional dispatch:  Semaphore           Semaphore        │
+│  keyed sources skip     batch=2000          batch=2000       │
+│  when key not set                                            │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │ Output sinks                                          │    │
+│  │  - summary (default)                                  │    │
+│  │  - --show-list  (formatted)                           │    │
+│  │  - -s           (raw pipe)                            │    │
+│  │  - -o           (plain text)                          │    │
+│  │  - --json       (full structured)                     │    │
+│  └──────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────┘
+Key design decisions:
 
-## Architecture
+Conditional source dispatch — get_active_sources() filters
+SOURCE_DISPATCH by key presence. Sources without keys are logged and
+skipped.
 
-```text
-┌──────────────────────────────────────────────────────────┐
-│                      subnoryx.py                         │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐  │
-│  │  Discovery    │  │  Resolution   │  │   Probing    │  │
-│  │  (parallel    │→ │  (async DNS)  │→ │  (HTTP/HTTPS)│  │
-│  │   9 fetchers) │  │               │  │              │  │
-│  └───────────────┘  └───────────────┘  └──────────────┘  │
-│         │                   │                  │         │
-│         ▼                   ▼                  ▼         │
-│   crt.sh               aiodns            httpx client    │
-│   HackerTarget         (or socket)       (verify=False)  │
-│   AlienVault                                             │
-│   Anubis                                                 │
-│   Wayback              Semaphore         Semaphore       │
-│   urlscan              batch=2000        batch=2000      │
-│   VirusTotal                                             │
-│   CertSpotter          ┌──────────────────────────┐      │
-│   Chaos                │  Final Output Sinks      │      │
-│                        │  - stdout (human/pipe)   │      │
-│                        │  - -o  (text)            │      │
-│                        │  --json (full detail)    │      │
-│                        └──────────────────────────┘      │
-└──────────────────────────────────────────────────────────┘
-```
+Input-mode auto-detection — detect_input_mode() classifies files
+by shared suffix so the two-stage workflow "just works".
 
-**Key design decisions:**
+Bounded batch_gather() — resolution/probing runs in chunks of 2000
+to cap memory on large scopes.
 
-- **Bounded `batch_gather()`** — resolutions/probes run in chunks of 2000 to
-  prevent memory spikes on 100k-name scopes.
-- **Retries with jitter** — `http_get_with_retry()` retries 429/5xx and
-  network errors with `1s + attempt + random(0, 0.5)` backoff.
-- **`aiodns` 2.x / 3.x compatibility** — `build_resolver()` auto-detects
-  the installed version and adapts the API call signature.
-- **RFC-1035-safe subdomain validation** — label length (63) and FQDN length
-  (253) enforced in `clean_subdomain()`.
-- **TTY-aware spinner** — non-interactive runs emit a single `[…] message`
-  line instead of animating escape codes into your logs.
+Retries with jitter — http_get_with_retry() handles 429/5xx and
+network errors.
 
----
+aiodns 2.x / 3.x compatibility — build_resolver() auto-detects
+the API signature.
 
-## Troubleshooting
+RFC-1035-safe validation — label length (63) and FQDN length (253)
+enforced in clean_subdomain().
 
-### `subnoryx: command not found`
+TTY-aware spinner — non-interactive runs emit one […] message line.
 
-Your shell hasn't reloaded the alias:
+NO_COLOR compliance — all ANSI output disabled when the env var is
+set.
 
-```bash
+Troubleshooting
+subnoryx: command not found
+bash
 source ~/.bashrc     # or ~/.zshrc
 # or open a new terminal
-```
+For scripts/cron, use the /usr/local/bin/subnoryx symlink or invoke
+directly: python3 /path/to/subnoryx.py.
 
-If you're calling `subnoryx` from a **script** or **cron**, aliases don't
-expand — use the `/usr/local/bin/subnoryx` symlink (offered by the installer)
-or invoke directly:
+Discovery returned 0 subdomains
+Run with -v to see per-source failures.
 
-```bash
-python3 /path/to/SUBNORYX/subnoryx.py -d example.com
-```
+Confirm network access to crt.sh, hackertarget.com, etc.
 
-### `error: argument -c/--config: expected one argument`
+Some domains genuinely have no public OSINT footprint. Try a well-known
+domain (example.com) as a baseline.
 
-`-c` requires a path. To inspect the **default** config, use:
+--match-codes ignored without --probe
+--match-codes only applies to probe results. Add --probe (or
+--probe-only):
 
-```bash
-subnoryx --show-config
-# or
-cat ~/.config/subnoryx/config.yaml
-```
+bash
+subnoryx -i subnoryx.txt --probe --match-codes 200
+Auto-detection picked the wrong mode
+Two ways to force:
 
-### `custom resolver list will be ignored`
+bash
+# Force subdomain-input mode
+subnoryx -i scope.txt --probe-only --match-codes 200
 
-`--resolvers` needs `aiodns`:
+# Force apex-enumeration mode
+subnoryx -d example.com -r
+--probe re-runs DNS resolution in apex mode
+That's intentional — probing unresolvable hosts wastes time. If you're in
+two-stage mode with --probe-only, DNS is not re-run unless you
+explicitly pass -r.
 
-```bash
+error: --threads must be >= 1
+Threads must be a positive integer. asyncio.Semaphore cannot be
+initialised with 0 (deadlock) or a negative value (exception).
+
+--resolvers requires aiodns
+bash
 pip install --user aiodns
-```
+Without aiodns, SUBNORYX falls back to socket.getaddrinfo — slower,
+but functional.
 
-Without `aiodns`, SUBNORYX falls back to `socket.getaddrinfo` which uses the
-system resolver — slower, but still functional.
+pip install fails with externally-managed-environment
+PEP 668 on Debian/Ubuntu 23.04+, Fedora 38+, etc. Create a venv:
 
-### Empty results for a domain
+bash
+python3 -m venv ~/.venvs/subnoryx
+source ~/.venvs/subnoryx/bin/activate
+pip install httpx aiodns pyyaml
+--show-config didn't create my config file
+By design — --show-config is read-only. Run any scan (or invoke
+init_or_load_config via subnoryx -d example.com) to create the
+template.
 
-Some possibilities:
+Composite-key sources appear "active" but return nothing
+censys needs API_ID:API_SECRET and fofa needs email:api_key.
+Single-value keys are silently rejected. Check with -v.
 
-1. The domain has no public subdomains in CT logs or passive DNS.
-2. Keyless sources rate-limited you — wait 60s or add API keys.
-3. `crt.sh` is intermittently slow — try `-v` to see per-source timing.
+DNS resolution is slow
+Install aiodns: pip install --user aiodns
 
-### `InsecureRequestWarning` during probing
+Increase concurrency: -t 500
 
-Suppressed automatically in the probing client (`warnings.catch_warnings()`).
-The `verify=False` setting is **intentional** — bug bounty recon needs to
-probe self-signed / expired certs.
+Use faster resolvers: --resolvers 1.1.1.1,1.0.0.1
 
-### DNS resolution is slow
-
-- Install `aiodns`: `pip install --user aiodns`
-- Increase concurrency: `-t 500`
-- Use faster resolvers: `--resolvers 1.1.1.1,1.0.0.1`
-
----
-
-## Uninstall
-
-```bash
-# From the SUBNORYX directory
+Uninstall
+bash
 ./install.sh --uninstall
 source ~/.bashrc    # or ~/.zshrc
-```
+Removes:
 
-This removes:
+The # >>> SUBNORYX alias >>> block from your rc file
 
-- The `# >>> SUBNORYX alias >>>` block from your rc file
-- The `/usr/local/bin/subnoryx` symlink (if present)
+The /usr/local/bin/subnoryx symlink (if present)
 
-Your `~/.config/subnoryx/config.yaml` is **not** touched — delete it manually
-if you want a clean slate:
+Your ~/.config/subnoryx/config.yaml is not touched. To remove it:
 
-```bash
+bash
 rm -rf ~/.config/subnoryx
-```
-
----
-
-## Contributing
-
+Contributing
 Contributions are welcome! To add a new OSINT source:
 
-1. Add its name to `API_KEY_NAMES` in `subnoryx.py`.
-2. Implement `async def fetch_yoursource(client, domain, api_key)` that
-   returns a `set[str]` of subdomains.
-3. Register it in `enumerate_single_domain()`'s `tasks` list.
-4. Add the source to the table in this README.
+Add its name to API_KEY_NAMES in subnoryx.py.
 
-Please open an issue first for significant changes, and follow the existing
-code style (async, bounded concurrency, retries via `http_get_with_retry`).
+If it's keyless, add it to KEYLESS_SOURCES; otherwise set
+requires_key=True in the dispatch entry.
 
----
+Implement async def fetch_yoursource(client, domain, key) that returns
+a set[str] of subdomains.
 
-## License
+Register it in SOURCE_DISPATCH.
 
-Distributed under the **GNU General Public License v3.0**.
+Add the source to the tables in this README.
 
-See [`LICENSE`](./LICENSE) for the full text.
+Please follow the existing code style: async, bounded concurrency, retries
+via http_get_with_retry, and defensive exception handling.
 
-```text
+License
+Distributed under the GNU General Public License v3.0. See
+LICENSE for the full text.
+
+text
 SUBNORYX is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
@@ -622,21 +662,14 @@ the Free Software Foundation, either version 3 of the License, or
 SUBNORYX is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-```
+Author
+Kalmux — @kalmux1
 
----
+Repository: https://github.com/kalmux1/SUBNORYX
 
-## Author
-
-**Kalmux** — [@kalmux1](https://github.com/kalmux1)
-
-- Repository: <https://github.com/kalmux1/SUBNORYX>
-- Issues: <https://github.com/kalmux1/SUBNORYX/issues>
-
----
+Issues: https://github.com/kalmux1/SUBNORYX/issues
 
 <div align="center">
+⚡ Happy hunting. Stay in scope. ⚡
 
-**⚡ Happy hunting. Stay in scope. ⚡**
-
-</div>
+</div> ```

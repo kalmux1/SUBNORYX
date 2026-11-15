@@ -2,9 +2,15 @@
 """
 SUBNORYX: Fast Async Passive Subdomain Enumerator & Recon Engine
 Author: Kalmux
-License: GPL-2.0
+License: GPL-3.0
 
 Requires Python >= 3.9 (tested on 3.9, 3.10, 3.11, 3.12).
+
+ETHICAL USE NOTICE
+------------------
+This tool is intended for AUTHORIZED security testing, bug bounty programs,
+and education. Only use it against systems you own or have explicit
+permission to test.
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ import asyncio
 import inspect
 import itertools
 import json
+import os
 import random
 import re
 import socket
@@ -21,24 +28,30 @@ import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    print(
+        "Error: 'httpx' is required but not installed.\n"
+        "Install it with:  pip install --user httpx",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
-# Optional high-speed async DNS library
 try:
     import aiodns
     HAS_AIODNS = True
 except ImportError:
     HAS_AIODNS = False
 
-# Optional PyYAML support
 try:
     import yaml
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
 
-__version__ = "1.0.0"
-LICENSE = "GPL-2.0"
+__version__ = "1.2.0"
+LICENSE = "GPL-3.0"
 
 # ----------------------------------------------------------------------
 # ANSI Colors & Styles
@@ -52,6 +65,9 @@ BLUE = "\033[94m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
+
+if os.environ.get("NO_COLOR"):
+    CYAN = GREEN = YELLOW = RED = MAGENTA = BLUE = BOLD = DIM = RESET = ""
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "subnoryx" / "config.yaml"
 
@@ -73,25 +89,35 @@ API_KEY_NAMES = [
     "virustotal", "whoisxmlapi", "windvane", "zoomeyeapi",
 ]
 
-DEFAULT_CONFIG_TEMPLATE = (
+KEYLESS_SOURCES = {
+    "alienvault", "anubis", "crtsh", "hackertarget", "wayback",
+}
+
+ALL_SOURCES = KEYLESS_SOURCES | set(API_KEY_NAMES)
+
+_DEFAULT_CONFIG_HEADER = (
     "# =====================================================================\n"
     f"# SUBNORYX Configuration File (v{__version__})\n"
     "# =====================================================================\n"
-    '# Leave API keys empty ("") to use keyless OSINT engines (crt.sh, HackerTarget, etc.)\n'
-    "\n"
-    "api_keys:\n"
-    + "\n".join(f'  {k}: ""' for k in API_KEY_NAMES) + "\n"
-    "\n"
-    "headers:\n"
-    f'  User-Agent: "{DEFAULT_HEADERS["User-Agent"]}"\n'
+    '# Leave API keys empty ("") to disable a keyed source.\n'
+    "#\n"
+    "# Sources with an empty key are SKIPPED at runtime.\n"
+    "# Sources with a key configured are QUERIED during enumeration.\n"
+    "# =====================================================================\n"
 )
 
-# Verbose mode is toggled at runtime from run_engine()
+DEFAULT_CONFIG_TEMPLATE = (
+    _DEFAULT_CONFIG_HEADER
+    + "\napi_keys:\n"
+    + "\n".join(f'  {k}: ""' for k in API_KEY_NAMES)
+    + "\n\nheaders:\n"
+    + f'  User-Agent: "{DEFAULT_HEADERS["User-Agent"]}"\n'
+)
+
 _VERBOSE = False
 
 
 def vlog(msg: str) -> None:
-    """Verbose log helper (writes to stderr so stdout piping stays clean)."""
     if _VERBOSE:
         print(f"{DIM}[v]{RESET} {msg}", file=sys.stderr)
 
@@ -119,73 +145,99 @@ def print_manual() -> None:
 {DIM}───────────────────────────────────────────────────────────────────────────────{RESET}
 
 {BOLD}NAME{RESET}
-    subnoryx - High-performance asynchronous passive subdomain enumeration engine
+    subnoryx - Asynchronous passive subdomain enumeration & recon engine
 
 {BOLD}SYNOPSIS{RESET}
-    {GREEN}subnoryx{RESET} [{BOLD}-d{RESET} DOMAIN] [{BOLD}-i{RESET} FILE] [{BOLD}-r{RESET}] [{BOLD}--probe{RESET}] [{BOLD}-t{RESET} THREADS] [{BOLD}-o{RESET} FILE] [{BOLD}--json{RESET} FILE] [{BOLD}-s{RESET}]
+    {GREEN}subnoryx{RESET} [{BOLD}-d{RESET} DOMAIN | {BOLD}-i{RESET} FILE] [{BOLD}-r{RESET}] [{BOLD}--probe{RESET}] [{BOLD}--probe-only{RESET}]
+             [{BOLD}--match-codes{RESET} CODES] [{BOLD}--show-list{RESET}] [{BOLD}-t{RESET} THREADS]
+             [{BOLD}--resolvers{RESET} LIST] [{BOLD}-o{RESET} FILE] [{BOLD}--json{RESET} FILE] [{BOLD}-H{RESET} KEY:VALUE]
+             [{BOLD}-c{RESET} PATH] [{BOLD}--show-config{RESET}] [{BOLD}-s{RESET}] [{BOLD}-v{RESET}] [{BOLD}-V{RESET}] [{BOLD}--man{RESET}]
 
-{BOLD}DESCRIPTION{RESET}
-    SUBNORYX is an asynchronous OSINT recon framework designed for bug bounty hunters
-    and penetration testers. Unlike traditional scrapers that rely on fragile HTML
-    parsing or blocking multiprocessing models, SUBNORYX queries high-speed public
-    APIs, Certificate Transparency logs, and passive DNS repositories concurrently.
+{BOLD}TWO-STAGE WORKFLOW{RESET}
+    Stage 1 — Discovery:
+        {GREEN}subnoryx -d example.com -r -o subnoryx.txt{RESET}
+        Saves discovered subdomains to a file. List is NOT printed.
+
+    Stage 2 — Probing:
+        {GREEN}subnoryx -i subnoryx.txt --probe --match-codes 200,301,403 -o live.txt{RESET}
+        Probes the previously discovered subdomains. No re-discovery.
+        Filters to status codes 200, 301, 403 only.
+
+    {BOLD}--probe-only{RESET} forces subdomain-input mode. Without it, SUBNORYX
+    auto-detects: if all lines in the input file share a common apex
+    suffix (e.g. every line ends with .example.com), the file is
+    treated as a list of subdomains.
+
+{BOLD}OUTPUT BEHAVIOR{RESET}
+    By default, the full subdomain list is {BOLD}not{RESET} printed to terminal.
+    Use one of these to inspect results:
+      • {BOLD}-o FILE{RESET}         save plain list to file
+      • {BOLD}--json FILE{RESET}     save structured JSON
+      • {BOLD}-s{RESET}              silent mode (raw stdout for piping)
+      • {BOLD}--show-list{RESET}     print formatted list to terminal
 
 {BOLD}OPTIONS{RESET}
     {BOLD}-d, --domain{RESET} DOMAIN
-        Specify a single target apex domain (e.g., {YELLOW}example.com{RESET}).
+        Single target. Apex domain by default; subdomain when used with --probe-only.
 
     {BOLD}-i, --input{RESET} FILE
-        Specify a scope file containing a list of target domains (one per line).
+        Input file: apex domains (enumerate) or subdomains (probe, with --probe).
 
     {BOLD}-r, --resolve{RESET}
-        Filter out dead subdomains ({RED}NXDOMAIN{RESET}) using asynchronous DNS resolution
-        ({CYAN}aiodns{RESET} / socket lookup).
+        Filter dead subdomains via async DNS resolution (aiodns).
 
     {BOLD}--probe{RESET}
-        Probe verified live subdomains for active HTTP/HTTPS web services, HTTP status
-        codes, and HTML page titles.
+        Probe hosts for HTTP/HTTPS status codes and titles.
+        Implies -r in apex mode; does NOT imply -r in probe-only mode.
+
+    {BOLD}--probe-only{RESET}
+        Skip discovery. Treat -d/-i inputs as subdomains to probe directly.
+        Implies --probe. Use this when feeding a file of known subdomains.
+
+    {BOLD}--match-codes{RESET} CODES
+        Comma-separated HTTP status codes to keep (e.g. 200,301,403).
+        Only meaningful with --probe. Filters -o and --json output.
+        Without this flag, all responsive codes are kept.
+
+    {BOLD}--show-list{RESET}
+        Print the full subdomain list to terminal (default: suppressed).
 
     {BOLD}-t, --threads{RESET} THREADS
-        Set concurrency limit for DNS resolution and HTTP probing (default: {YELLOW}100{RESET}).
+        Concurrency limit (default: 100, min: 1).
 
     {BOLD}--resolvers{RESET} LIST
-        Comma-separated list of custom DNS resolvers (default: {YELLOW}1.1.1.1,8.8.8.8,9.9.9.9{RESET}).
-        Requires {CYAN}aiodns{RESET} to take effect.
+        Comma-separated DNS resolvers (default: 1.1.1.1,8.8.8.8,9.9.9.9).
+        Requires aiodns.
 
     {BOLD}-o, --output{RESET} FILE
-        Save cleaned, unique subdomain list to the specified file path.
+        Save filtered subdomain list (plain text).
 
     {BOLD}--json{RESET} FILE
-        Save full results (subdomains + resolved IPs + HTTP probe details) as JSON.
+        Save full structured results (subdomains + IPs + probe details).
 
     {BOLD}-H, --header{RESET} KEY:VALUE
-        Inject a custom HTTP header for {BOLD}probing requests only{RESET}
-        (e.g., {YELLOW}-H "X-Bug-Bounty: HackerOne-kalmux"{RESET}).
-        No headers are injected by default. To inject headers into passive API
-        calls as well, edit the {CYAN}headers:{RESET} section of your config file.
+        Custom HTTP header for probing only. Repeatable.
 
     {BOLD}-c, --config{RESET} PATH
-        Path to YAML configuration file (default: {YELLOW}~/.config/subnoryx/config.yaml{RESET}).
+        Config file path (default: ~/.config/subnoryx/config.yaml).
 
     {BOLD}--show-config{RESET}
-        Print the resolved configuration (headers + masked API key status) and exit.
+        Print masked config and exit.
 
     {BOLD}-s, --silent{RESET}
-        Silent mode. Suppresses banners and logs, outputting only raw subdomains
-        for seamless terminal piping ({GREEN}subnoryx -d target.com -s | httpx{RESET}).
-
-    {BOLD}--man{RESET}
-        Display this comprehensive manual page and exit.
+        Silent mode — raw subdomains on stdout, no banner/spinner.
 
     {BOLD}-v, --verbose{RESET}
-        Enable verbose output on stderr (per-source timing, retries, failures).
+        Verbose per-source logs on stderr.
 
     {BOLD}-V, --version{RESET}
-        Display version information and exit.
+        Print version and exit.
 
-{BOLD}CONFIGURATION & API KEYS{RESET}
-    SUBNORYX supports over 40 API keys out of the box. Configure your keys in:
-    {CYAN}~/.config/subnoryx/config.yaml{RESET}
+    {BOLD}--man{RESET}
+        This manual.
+
+{BOLD}ENVIRONMENT{RESET}
+    {BOLD}NO_COLOR{RESET}   Disables ANSI colors.
 
 {BOLD}AUTHOR{RESET}
     Created by Kalmux. Licensed under {LICENSE}.
@@ -198,8 +250,6 @@ def print_manual() -> None:
 # Spinner
 # ----------------------------------------------------------------------
 class Spinner:
-    """Sleek terminal spinner — automatically disabled when stdout isn't a TTY."""
-
     def __init__(self, message: str = "Working..."):
         self.message = message
         self.spinner = itertools.cycle(
@@ -240,13 +290,11 @@ class Spinner:
 # Config loading
 # ----------------------------------------------------------------------
 def _parse_config_fallback(raw_text: str, config: dict) -> None:
-    """Minimal YAML-ish parser for when PyYAML is not installed."""
     current_section: str | None = None
     for line in raw_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        # Top-level section header, e.g. "api_keys:" / "headers:"
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*:", stripped):
             current_section = stripped[:-1].strip()
             continue
@@ -261,18 +309,19 @@ def _parse_config_fallback(raw_text: str, config: dict) -> None:
             config["headers"][key] = value
 
 
-def init_or_load_config(config_path: Path) -> dict:
+def init_or_load_config(config_path: Path, *, create: bool = True) -> dict:
     config = {
         "api_keys": {k: "" for k in API_KEY_NAMES},
         "headers": dict(DEFAULT_HEADERS),
     }
 
     if not config_path.exists():
-        try:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
-        except Exception as e:
-            vlog(f"Could not create default config: {e}")
+        if create:
+            try:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+            except Exception as e:
+                vlog(f"Could not create default config: {e}")
         return config
 
     try:
@@ -310,7 +359,6 @@ def init_or_load_config(config_path: Path) -> dict:
 
 
 def mask_key(value: str) -> str:
-    """Mask an API key for safe display: show first/last 4 chars."""
     if not value:
         return "(empty)"
     if len(value) <= 8:
@@ -318,8 +366,19 @@ def mask_key(value: str) -> str:
     return f"{value[:4]}…{value[-4:]}"
 
 
+_SECRET_HEADER_RE = re.compile(
+    r"auth|token|key|secret|cookie|pass|credential|session",
+    re.IGNORECASE,
+)
+
+
+def mask_header(name: str, value: str) -> str:
+    if _SECRET_HEADER_RE.search(name):
+        return mask_key(value)
+    return value
+
+
 def print_config_summary(config: dict, config_path: Path) -> None:
-    """Print a safe, masked summary of the loaded configuration."""
     print(f"\n{CYAN}{BOLD}SUBNORYX Configuration Summary{RESET}")
     print(f"{DIM}{'─' * 55}{RESET}")
     print(f"{BOLD}Config file :{RESET} {config_path}")
@@ -331,7 +390,7 @@ def print_config_summary(config: dict, config_path: Path) -> None:
 
     print(f"{BOLD}Headers{RESET} ({len(config['headers'])}):")
     for k, v in config["headers"].items():
-        print(f"  {k}: {v}")
+        print(f"  {k}: {mask_header(k, v)}")
     print()
 
     print(f"{BOLD}API Keys{RESET}:")
@@ -342,8 +401,8 @@ def print_config_summary(config: dict, config_path: Path) -> None:
             print(f"  {GREEN}✓{RESET} {k:<16} {mask_key(v)}")
     if active == 0:
         print(
-            f"  {DIM}(none configured — using keyless OSINT engines: "
-            f"crt.sh, HackerTarget, AlienVault, Wayback, Anubis){RESET}"
+            f"  {DIM}(none configured — keyless sources only: "
+            f"{', '.join(sorted(KEYLESS_SOURCES))}){RESET}"
         )
     else:
         print(
@@ -368,13 +427,14 @@ def normalize_domain_input(raw: str) -> str:
         parsed = urlparse(item)
         item = parsed.hostname or ""
     else:
+        if "@" in item:
+            item = item.rsplit("@", 1)[1]
         item = item.split("/")[0].split(":")[0]
     item = _STAR_PREFIX.sub("", item)
     return item.rstrip(".")
 
 
 def clean_subdomain(sub: str, domain: str) -> str | None:
-    """Validate and normalise a discovered subdomain. Returns None if invalid."""
     if not sub:
         return None
     sub = _STAR_PREFIX.sub("", sub.strip().lower()).rstrip(".")
@@ -388,8 +448,43 @@ def clean_subdomain(sub: str, domain: str) -> str | None:
     return sub
 
 
+def detect_input_mode(lines: list[str]) -> str:
+    """
+    Heuristic: distinguish a subdomain list from an apex-domain list.
+
+    Returns "subdomains" only when a strong signal is present:
+      - ≥2 non-comment lines
+      - all lines share a common suffix of ≥2 labels
+      - every line has MORE labels than that shared suffix
+        (i.e. every line is a strict subdomain of the common apex)
+
+    Single-line files, mixed files, and files with differing TLDs are
+    treated as "apex" (safer default; user can force with --probe-only).
+    """
+    clean = [l for l in lines if l and not l.startswith("#")]
+    if len(clean) < 2:
+        return "apex"
+
+    parsed = [l.split(".") for l in clean]
+    shortest = min(parsed, key=len)
+
+    suffix_len = 0
+    for i in range(1, len(shortest) + 1):
+        candidate = shortest[-i:]
+        if all(l[-i:] == candidate for l in parsed if len(l) >= i):
+            suffix_len = i
+        else:
+            break
+
+    # Strict subdomain signal: shared apex of ≥2 labels AND every line
+    # extends it with at least one extra label.
+    if suffix_len >= 2 and all(len(l) > suffix_len for l in parsed):
+        return "subdomains"
+    return "apex"
+
+
 # ----------------------------------------------------------------------
-# HTTP retry helper
+# HTTP helper
 # ----------------------------------------------------------------------
 async def http_get_with_retry(
     client: httpx.AsyncClient,
@@ -399,9 +494,6 @@ async def http_get_with_retry(
     retries: int = 2,
     **kwargs,
 ) -> httpx.Response:
-    """GET with retries on transient failures (429, 5xx, network errors)."""
-    last_exc: Exception | None = None
-    resp: httpx.Response | None = None
     for attempt in range(retries + 1):
         try:
             resp = await client.get(url, headers=headers, **kwargs)
@@ -412,90 +504,82 @@ async def http_get_with_retry(
                 continue
             return resp
         except (httpx.RequestError, httpx.TimeoutException) as e:
-            last_exc = e
             if attempt < retries:
                 backoff = (1.0 + attempt) + random.uniform(0, 0.5)
                 vlog(f"Retry {url} in {backoff:.1f}s ({type(e).__name__})")
                 await asyncio.sleep(backoff)
                 continue
             raise
-    if last_exc:
-        raise last_exc
-    if resp is not None:
-        return resp
     raise RuntimeError(f"http_get_with_retry exhausted for {url}")
 
 
 # ======================================================================
-# PASSIVE OSINT SOURCES
+# FETCH FUNCTIONS (unchanged from v1.1.0 — all 40 sources)
 # ======================================================================
-async def fetch_crtsh(client: httpx.AsyncClient, domain: str) -> set[str]:
-    subs: set[str] = set()
+async def fetch_crtsh(client, domain, key=""):
+    subs = set()
     url = f"https://crt.sh/?q=%25.{domain}&output=json"
     try:
         resp = await http_get_with_retry(client, url, timeout=30.0)
         if resp.status_code == 200:
             for entry in resp.json():
                 for name in str(entry.get("name_value", "")).splitlines():
-                    cleaned = clean_subdomain(name, domain)
-                    if cleaned:
-                        subs.add(cleaned)
+                    c = clean_subdomain(name, domain)
+                    if c:
+                        subs.add(c)
     except Exception as e:
         vlog(f"crt.sh failed for {domain}: {e}")
     return subs
 
 
-async def fetch_hackertarget(client: httpx.AsyncClient, domain: str) -> set[str]:
-    subs: set[str] = set()
+async def fetch_hackertarget(client, domain, key=""):
+    subs = set()
     url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
     try:
         resp = await http_get_with_retry(client, url, timeout=20.0)
         if resp.status_code == 200 and "API count exceeded" not in resp.text:
             for line in resp.text.splitlines():
-                host = line.split(",")[0]
-                cleaned = clean_subdomain(host, domain)
-                if cleaned:
-                    subs.add(cleaned)
+                c = clean_subdomain(line.split(",")[0], domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
         vlog(f"HackerTarget failed for {domain}: {e}")
     return subs
 
 
-async def fetch_alienvault(client: httpx.AsyncClient, domain: str) -> set[str]:
-    subs: set[str] = set()
-    url = (
-        f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
-    )
+async def fetch_alienvault(client, domain, key=""):
+    subs = set()
+    url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+    headers = {"X-OTX-API-KEY": key} if key else {}
     try:
-        resp = await http_get_with_retry(client, url, timeout=25.0)
+        resp = await http_get_with_retry(client, url, headers=headers, timeout=25.0)
         if resp.status_code == 200:
-            for record in resp.json().get("passive_dns", []):
-                cleaned = clean_subdomain(record.get("hostname", ""), domain)
-                if cleaned:
-                    subs.add(cleaned)
+            for r in resp.json().get("passive_dns", []):
+                c = clean_subdomain(r.get("hostname", ""), domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
         vlog(f"AlienVault failed for {domain}: {e}")
     return subs
 
 
-async def fetch_anubis(client: httpx.AsyncClient, domain: str) -> set[str]:
-    """Best-effort — jldc.me/anubis is intermittently unavailable."""
-    subs: set[str] = set()
+async def fetch_anubis(client, domain, key=""):
+    subs = set()
     url = f"https://jldc.me/anubis/subdomains/{domain}"
     try:
         resp = await http_get_with_retry(client, url, timeout=15.0, retries=1)
         if resp.status_code == 200:
             for item in resp.json():
-                cleaned = clean_subdomain(item, domain)
-                if cleaned:
-                    subs.add(cleaned)
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
-        vlog(f"Anubis failed for {domain} (best-effort): {e}")
+        vlog(f"Anubis failed for {domain}: {e}")
     return subs
 
 
-async def fetch_wayback(client: httpx.AsyncClient, domain: str) -> set[str]:
-    subs: set[str] = set()
+async def fetch_wayback(client, domain, key=""):
+    subs = set()
     url = (
         f"https://web.archive.org/cdx/search/cdx"
         f"?url=*.{domain}/*&output=json&fl=original&collapse=urlkey"
@@ -503,68 +587,121 @@ async def fetch_wayback(client: httpx.AsyncClient, domain: str) -> set[str]:
     try:
         resp = await http_get_with_retry(client, url, timeout=30.0)
         if resp.status_code == 200:
-            data = resp.json()
-            for row in data[1:]:
+            for row in resp.json()[1:]:
                 if row:
-                    parsed = urlparse(row[0])
-                    cleaned = clean_subdomain(parsed.hostname or "", domain)
-                    if cleaned:
-                        subs.add(cleaned)
+                    c = clean_subdomain(urlparse(row[0]).hostname or "", domain)
+                    if c:
+                        subs.add(c)
     except Exception as e:
         vlog(f"Wayback failed for {domain}: {e}")
     return subs
 
 
-async def fetch_urlscan(
-    client: httpx.AsyncClient, domain: str, api_key: str
-) -> set[str]:
-    subs: set[str] = set()
-    url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=1000"
-    headers = {"API-Key": api_key} if api_key else {}
-    try:
-        resp = await http_get_with_retry(client, url, headers=headers, timeout=25.0)
-        if resp.status_code == 200:
-            for item in resp.json().get("results", []):
-                for candidate in (
-                    item.get("page", {}).get("domain", ""),
-                    item.get("task", {}).get("domain", ""),
-                ):
-                    cleaned = clean_subdomain(candidate, domain)
-                    if cleaned:
-                        subs.add(cleaned)
-    except Exception as e:
-        vlog(f"urlscan failed for {domain}: {e}")
-    return subs
-
-
-async def fetch_virustotal(
-    client: httpx.AsyncClient, domain: str, api_key: str
-) -> set[str]:
-    subs: set[str] = set()
-    if not api_key:
+async def fetch_bevigil(client, domain, key):
+    subs = set()
+    if not key:
         return subs
-    url = (
-        f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains?limit=40"
-    )
+    url = f"https://osint.bevigil.com/api/{domain}/subdomains/"
     try:
         resp = await http_get_with_retry(
-            client, url, headers={"x-apikey": api_key}, timeout=20.0
+            client, url, headers={"X-Access-Token": key}, timeout=20.0
         )
         if resp.status_code == 200:
-            for item in resp.json().get("data", []):
-                cleaned = clean_subdomain(item.get("id", ""), domain)
-                if cleaned:
-                    subs.add(cleaned)
+            for item in resp.json().get("subdomains", []):
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
-        vlog(f"VirusTotal failed for {domain}: {e}")
+        vlog(f"BeVigil failed for {domain}: {e}")
     return subs
 
 
-async def fetch_certspotter(
-    client: httpx.AsyncClient, domain: str, api_key: str
-) -> set[str]:
-    subs: set[str] = set()
-    if not api_key:
+async def fetch_bufferover(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://dns.bufferover.run/dns?q=.{domain}"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"x-api-key": key}, timeout=20.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for row in (data.get("FDNS_A") or []) + (data.get("RDNS") or []):
+                parts = row.split(",")
+                if len(parts) >= 2:
+                    c = clean_subdomain(parts[1], domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"BufferOver failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_builtwith(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.builtwith.com/v21/api.json?KEY={key}&LOOKUP={domain}&SUB=1"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for result in resp.json().get("Results", []):
+                for path in result.get("Result", {}).get("Paths", []):
+                    c = clean_subdomain(path.get("Domain", ""), domain)
+                    if c:
+                        subs.add(c)
+                for sub in result.get("Result", {}).get("SubDomains", []):
+                    c = clean_subdomain(sub, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"BuiltWith failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_c99(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.c99.nl/subdomainfinder?key={key}&domain={domain}&json"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=30.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"C99 failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_censys(client, domain, key):
+    subs = set()
+    if not key or ":" not in key:
+        vlog("Censys requires 'API_ID:API_SECRET' format")
+        return subs
+    api_id, api_secret = key.split(":", 1)
+    url = f"https://search.censys.io/api/v2/hosts/search?q=names:{domain}&per_page=100"
+    try:
+        resp = await http_get_with_retry(
+            client, url, auth=(api_id, api_secret), timeout=25.0
+        )
+        if resp.status_code == 200:
+            for hit in resp.json().get("result", {}).get("hits", []):
+                for name in hit.get("names", []):
+                    c = clean_subdomain(name, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"Censys failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_certspotter(client, domain, key):
+    subs = set()
+    if not key:
         return subs
     url = (
         f"https://api.certspotter.com/v1/issuances"
@@ -572,70 +709,718 @@ async def fetch_certspotter(
     )
     try:
         resp = await http_get_with_retry(
-            client,
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=20.0,
+            client, url, headers={"Authorization": f"Bearer {key}"}, timeout=20.0
         )
         if resp.status_code == 200:
             for entry in resp.json():
                 for name in entry.get("dns_names", []):
-                    cleaned = clean_subdomain(name, domain)
-                    if cleaned:
-                        subs.add(cleaned)
+                    c = clean_subdomain(name, domain)
+                    if c:
+                        subs.add(c)
     except Exception as e:
         vlog(f"CertSpotter failed for {domain}: {e}")
     return subs
 
 
-async def fetch_chaos(
-    client: httpx.AsyncClient, domain: str, api_key: str
-) -> set[str]:
-    subs: set[str] = set()
-    if not api_key:
+async def fetch_chaos(client, domain, key):
+    subs = set()
+    if not key:
         return subs
     url = f"https://dns.projectdiscovery.io/dns/{domain}/subdomains"
     try:
         resp = await http_get_with_retry(
-            client, url, headers={"Authorization": api_key}, timeout=20.0
+            client, url, headers={"Authorization": key}, timeout=20.0
         )
         if resp.status_code == 200:
             for sub in resp.json().get("subdomains", []):
-                cleaned = clean_subdomain(f"{sub}.{domain}", domain)
-                if cleaned:
-                    subs.add(cleaned)
+                c = clean_subdomain(f"{sub}.{domain}", domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
         vlog(f"Chaos failed for {domain}: {e}")
     return subs
 
 
+async def fetch_chinaz(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://apidatav2.chinaz.com/single/subdomain/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("Result", []) or []:
+                c = clean_subdomain(item.get("SubDomain", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Chinaz failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_digitalyama(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.digitalyama.com/subdomain_finder?domain={domain}&key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"DigitalYama failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_dnsdb(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.dnsdb.info/lookup/rrset/name/*.{domain}/A?limit=1000"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"X-API-Key": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                try:
+                    obj = json.loads(line)
+                    c = clean_subdomain(obj.get("rrname", "").rstrip("."), domain)
+                    if c:
+                        subs.add(c)
+                except Exception:
+                    continue
+    except Exception as e:
+        vlog(f"DNSDB failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_dnsdumpster(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.dnsdumpster.com/domain/{domain}"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"X-API-Key": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for section in ("a", "cname"):
+                for record in data.get(section, []) or []:
+                    c = clean_subdomain(record.get("host", ""), domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"DNSDumpster failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_dnsrepo(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://dnsrepo.nou-parrain.com/api/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"DNSRepo failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_domainsproject(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.domainsproject.org/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"DomainsProject failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_driftnet(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.driftnet.io/v1/subdomains?domain={domain}&key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Driftnet failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_fofa(client, domain, key):
+    subs = set()
+    if not key or ":" not in key:
+        vlog("FOFA requires 'email:api_key' format")
+        return subs
+    import base64
+    email, api_key = key.split(":", 1)
+    query = f'domain="{domain}"'
+    qbase64 = base64.b64encode(query.encode()).decode()
+    url = f"https://fofa.info/api/v1/search/all?email={email}&key={api_key}&qbase64={qbase64}&size=1000&fields=host"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for row in resp.json().get("results", []) or []:
+                host = row[0] if isinstance(row, list) else row
+                c = clean_subdomain(urlparse(f"http://{host}").hostname or "", domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"FOFA failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_fullhunt(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://fullhunt.io/api/v1/domain/{domain}/subdomains"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"X-API-KEY": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("hosts", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"FullHunt failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_github(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.github.com/search/code?q={domain}+in:file&per_page=100"
+    headers = {
+        "Authorization": f"token {key}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    try:
+        resp = await http_get_with_retry(client, url, headers=headers, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("items", []):
+                text = f"{item.get('name', '')} {item.get('path', '')}"
+                for match in re.findall(
+                    rf"([a-zA-Z0-9_-]+\.{re.escape(domain)})", text
+                ):
+                    c = clean_subdomain(match, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"GitHub failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_intelx(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = "https://2.intelx.io/phonebook/search"
+    payload = {
+        "term": domain, "maxresults": 1000, "media": 0,
+        "target": 1, "timeout": 20,
+    }
+    headers = {"x-key": key, "Content-Type": "application/json"}
+    try:
+        resp = await client.post(url, json=payload, headers=headers, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("selectors", []) or []:
+                c = clean_subdomain(item.get("selectorvalue", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"IntelX failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_leakix(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://leakix.net/api/subdomains/{domain}"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"api-key": key, "accept": "application/json"},
+            timeout=25.0,
+        )
+        if resp.status_code == 200:
+            for item in resp.json() or []:
+                c = clean_subdomain(item.get("subdomain", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"LeakIX failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_merklemap(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.merklemap.com/search?query=*.{domain}&key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("results", []) or []:
+                c = clean_subdomain(item.get("domain", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"MerkleMap failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_netlas(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = (
+        f"https://app.netlas.io/api/domains/?q=domain:*.{domain}"
+        f"&source_type=include&start=0&fields=domain"
+    )
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"X-API-Key": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("items", []) or []:
+                c = clean_subdomain(item.get("data", {}).get("domain", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Netlas failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_onyphe(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://www.onyphe.io/api/v1/summary/domain:{domain}?size=1000"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"Authorization": f"Bearer {key}"}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("results", []) or []:
+                c = clean_subdomain(item.get("hostname", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Onyphe failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_profundis(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.profundis.io/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Profundis failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_pugrecon(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.pugrecon.com/v1/subdomains?domain={domain}&key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"PugRecon failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_quake(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = "https://quake.360.net/api/v3/search/quake_service"
+    headers = {"X-QuakeToken": key, "Content-Type": "application/json"}
+    payload = {"query": f'domain:"{domain}"', "size": 500}
+    try:
+        resp = await client.post(url, json=payload, headers=headers, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("data", []) or []:
+                hostnames = (
+                    item.get("service", {}).get("http", {}).get("hostname", "")
+                )
+                for name in hostnames.split(","):
+                    c = clean_subdomain(name, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"Quake failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_reconeeer(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.reconeer.com/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Reconeer failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_redhuntlabs(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = (
+        f"https://reconapi.redhuntlabs.com/community/v1/domains/subdomains"
+        f"?domain={domain}&page_size=1000"
+    )
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"X-BLOBR-KEY": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"RedHuntLabs failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_robtex(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://freeapi.robtex.com/pdns/forward/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                try:
+                    obj = json.loads(line)
+                    c = clean_subdomain(obj.get("rrname", "").rstrip("."), domain)
+                    if c:
+                        subs.add(c)
+                except Exception:
+                    continue
+    except Exception as e:
+        vlog(f"Robtex failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_rsecloud(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.rsecloud.com/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"RSECloud failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_securitytrails(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.securitytrails.com/v1/domain/{domain}/subdomains"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"APIKEY": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(f"{item}.{domain}", domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"SecurityTrails failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_shodan(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = (
+        f"https://api.shodan.io/shodan/host/search"
+        f"?query=hostname:{domain}&key={key}&page=1"
+    )
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for m in resp.json().get("matches", []) or []:
+                for name in m.get("hostnames", []) or []:
+                    c = clean_subdomain(name, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"Shodan failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_submd(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.submd.com/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"SubMD failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_threatbook(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = (
+        f"https://api.threatbook.cn/v3/domain/sub_domains"
+        f"?apikey={key}&resource={domain}"
+    )
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("data", {}).get(domain, []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"ThreatBook failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_urlscan(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=1000"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"API-Key": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("results", []) or []:
+                for cand in (
+                    item.get("page", {}).get("domain", ""),
+                    item.get("task", {}).get("domain", ""),
+                ):
+                    c = clean_subdomain(cand, domain)
+                    if c:
+                        subs.add(c)
+    except Exception as e:
+        vlog(f"urlscan failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_virustotal(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains?limit=40"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"x-apikey": key}, timeout=20.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("data", []):
+                c = clean_subdomain(item.get("id", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"VirusTotal failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_whoisxmlapi(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://subdomains.whoisxmlapi.com/api/v1?apiKey={key}&domainName={domain}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("result", {}).get("domains", []) or []:
+                c = clean_subdomain(item.get("domain", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"WhoisXMLAPI failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_windvane(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.windvane.com/v1/subdomains/{domain}?key={key}"
+    try:
+        resp = await http_get_with_retry(client, url, timeout=25.0)
+        if resp.status_code == 200:
+            for item in resp.json().get("subdomains", []) or []:
+                c = clean_subdomain(item, domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"Windvane failed for {domain}: {e}")
+    return subs
+
+
+async def fetch_zoomeyeapi(client, domain, key):
+    subs = set()
+    if not key:
+        return subs
+    url = f"https://api.zoomeye.org/domain/search?q={domain}&type=0&page=1"
+    try:
+        resp = await http_get_with_retry(
+            client, url, headers={"API-KEY": key}, timeout=25.0
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("list", []) or []:
+                c = clean_subdomain(item.get("name", ""), domain)
+                if c:
+                    subs.add(c)
+    except Exception as e:
+        vlog(f"ZoomEye failed for {domain}: {e}")
+    return subs
+
+
+# ======================================================================
+# SOURCE DISPATCH
+# ======================================================================
+SOURCE_DISPATCH: dict[str, tuple] = {
+    "alienvault": (fetch_alienvault, False),
+    "anubis": (fetch_anubis, False),
+    "crtsh": (fetch_crtsh, False),
+    "hackertarget": (fetch_hackertarget, False),
+    "wayback": (fetch_wayback, False),
+    "bevigil": (fetch_bevigil, True),
+    "bufferover": (fetch_bufferover, True),
+    "builtwith": (fetch_builtwith, True),
+    "c99": (fetch_c99, True),
+    "censys": (fetch_censys, True),
+    "certspotter": (fetch_certspotter, True),
+    "chaos": (fetch_chaos, True),
+    "chinaz": (fetch_chinaz, True),
+    "digitalyama": (fetch_digitalyama, True),
+    "dnsdb": (fetch_dnsdb, True),
+    "dnsdumpster": (fetch_dnsdumpster, True),
+    "dnsrepo": (fetch_dnsrepo, True),
+    "domainsproject": (fetch_domainsproject, True),
+    "driftnet": (fetch_driftnet, True),
+    "fofa": (fetch_fofa, True),
+    "fullhunt": (fetch_fullhunt, True),
+    "github": (fetch_github, True),
+    "intelx": (fetch_intelx, True),
+    "leakix": (fetch_leakix, True),
+    "merklemap": (fetch_merklemap, True),
+    "netlas": (fetch_netlas, True),
+    "onyphe": (fetch_onyphe, True),
+    "profundis": (fetch_profundis, True),
+    "pugrecon": (fetch_pugrecon, True),
+    "quake": (fetch_quake, True),
+    "reconeeer": (fetch_reconeeer, True),
+    "redhuntlabs": (fetch_redhuntlabs, True),
+    "robtex": (fetch_robtex, True),
+    "rsecloud": (fetch_rsecloud, True),
+    "securitytrails": (fetch_securitytrails, True),
+    "shodan": (fetch_shodan, True),
+    "submd": (fetch_submd, True),
+    "threatbook": (fetch_threatbook, True),
+    "urlscan": (fetch_urlscan, True),
+    "virustotal": (fetch_virustotal, True),
+    "whoisxmlapi": (fetch_whoisxmlapi, True),
+    "windvane": (fetch_windvane, True),
+    "zoomeyeapi": (fetch_zoomeyeapi, True),
+}
+
+
+def get_active_sources(api_keys: dict[str, str]) -> list[tuple[str, object]]:
+    active = []
+    for source_name, (fetch_fn, requires_key) in SOURCE_DISPATCH.items():
+        if requires_key:
+            if not api_keys.get(source_name, ""):
+                vlog(f"Skipping {source_name} (no API key configured)")
+                continue
+        active.append((source_name, fetch_fn))
+    return active
+
+
 # ======================================================================
 # DNS RESOLUTION
 # ======================================================================
-def build_resolver(
-    nameservers: list[str],
-) -> tuple["aiodns.DNSResolver | None", dict]:
-    """Return (resolver, query_kwargs) tolerant of aiodns 2.x and 3.x APIs."""
+def build_resolver(nameservers: list[str]):
     if not HAS_AIODNS:
         return None, {}
-
-    # aiodns < 3.0: timeout / tries accepted by constructor
     try:
-        resolver = aiodns.DNSResolver(
+        return aiodns.DNSResolver(
             nameservers=nameservers, timeout=3.0, tries=2
-        )
-        return resolver, {}
+        ), {}
     except TypeError:
         pass
-
-    # aiodns >= 3.0: constructor takes only nameservers
     try:
         resolver = aiodns.DNSResolver(nameservers=nameservers)
     except Exception as e:
         vlog(f"Failed to build aiodns resolver: {e}")
         return None, {}
-
-    # Probe whether query() accepts a timeout kwarg (varies across 3.x)
     query_kwargs: dict = {}
     try:
         if "timeout" in inspect.signature(resolver.query).parameters:
@@ -645,99 +1430,77 @@ def build_resolver(
     return resolver, query_kwargs
 
 
-async def resolve_single_host(
-    sub: str,
-    sem: asyncio.Semaphore,
-    resolver,
-    query_kwargs: dict,
-    loop: asyncio.AbstractEventLoop,
-) -> tuple[str, list[str]]:
+async def resolve_single_host(sub, sem, resolver, query_kwargs, loop):
     async with sem:
         if resolver is not None:
             try:
                 res = await resolver.query(sub, "A", **query_kwargs)
-                ips = sorted({r.host for r in res})
-                return (sub, ips)
+                return (sub, sorted({r.host for r in res}))
             except Exception:
                 return (sub, [])
         try:
             infos = await loop.getaddrinfo(sub, None, family=socket.AF_INET)
-            ips = sorted({info[4][0] for info in infos if info[4]})
-            return (sub, ips)
+            return (sub, sorted({i[4][0] for i in infos if i[4]}))
         except Exception:
             return (sub, [])
 
 
-async def batch_gather(factory, items, batch_size: int = 2000) -> list:
-    """Run `factory(item)` for each item in bounded batches to cap memory usage."""
+async def batch_gather(factory, items, batch_size=2000):
     items = list(items)
-    results: list = []
+    results = []
     for i in range(0, len(items), batch_size):
         batch = items[i:i + batch_size]
-        batch_results = await asyncio.gather(*(factory(it) for it in batch))
-        results.extend(batch_results)
+        results.extend(await asyncio.gather(*(factory(it) for it in batch)))
     return results
 
 
-async def resolve_subdomains(
-    subdomains: set[str],
-    concurrency: int,
-    nameservers: list[str],
-    quiet: bool,
-) -> dict[str, list[str]]:
+async def resolve_subdomains(subdomains, concurrency, nameservers, quiet):
     if not subdomains:
         return {}
-
-    spinner = Spinner(
-        f"Resolving {len(subdomains)} subdomains via async DNS..."
-    )
+    spinner = Spinner(f"Resolving {len(subdomains)} subdomains via async DNS...")
     if not quiet:
         spinner.start()
-
-    sem = asyncio.Semaphore(concurrency)
-    loop = asyncio.get_running_loop()
-    resolver, query_kwargs = build_resolver(nameservers)
-    if resolver is None and HAS_AIODNS:
-        vlog("aiodns resolver init failed; falling back to socket.getaddrinfo")
-    if resolver is None and not HAS_AIODNS:
-        vlog("aiodns not installed; using socket.getaddrinfo (slower)")
-
-    results = await batch_gather(
-        lambda sub: resolve_single_host(sub, sem, resolver, query_kwargs, loop),
-        sorted(subdomains),
-        batch_size=2000,
-    )
-
-    live_map = {sub: ips for sub, ips in results if ips}
-    if not quiet:
-        await spinner.stop(
-            f"DNS Resolution complete: "
-            f"{len(live_map)}/{len(subdomains)} live hosts verified."
+    try:
+        sem = asyncio.Semaphore(concurrency)
+        loop = asyncio.get_running_loop()
+        resolver, qk = build_resolver(nameservers)
+        if resolver is None:
+            vlog("Using socket.getaddrinfo fallback for DNS resolution")
+        results = await batch_gather(
+            lambda s: resolve_single_host(s, sem, resolver, qk, loop),
+            sorted(subdomains),
+            batch_size=2000,
         )
+        live_map = {s: ips for s, ips in results if ips}
+    finally:
+        if not quiet:
+            await spinner.stop(
+                f"DNS Resolution complete: "
+                f"{len(locals().get('live_map', {}))}/{len(subdomains)} live hosts verified."
+            )
     return live_map
 
 
 # ======================================================================
 # HTTP PROBING
 # ======================================================================
-async def probe_single_host(
-    client: httpx.AsyncClient, sub: str, sem: asyncio.Semaphore
-) -> tuple[str, dict | None]:
+async def probe_single_host(client, sub, sem):
     async with sem:
         for scheme in ("https", "http"):
             url = f"{scheme}://{sub}"
             try:
                 resp = await client.get(url, timeout=8.0)
-                title_match = re.search(
-                    r"<title[^>]*>(.*?)</title>", resp.text,
+                body = resp.text[:100_000]
+                m = re.search(
+                    r"<title[^>]*>(.*?)</title>", body,
                     re.IGNORECASE | re.DOTALL,
                 )
                 title = (
-                    title_match.group(1).strip().replace("\n", " ")[:60]
-                    if title_match else ""
+                    m.group(1).strip().replace("\n", " ")[:60]
+                    if m else ""
                 )
                 return (sub, {
-                    "url": url,
+                    "url": str(resp.url),
                     "status": resp.status_code,
                     "title": title,
                 })
@@ -746,81 +1509,99 @@ async def probe_single_host(
         return (sub, None)
 
 
-async def probe_http_hosts(
-    subdomains: list[str],
-    headers: dict[str, str],
-    concurrency: int,
-    quiet: bool,
-) -> dict[str, dict]:
+async def probe_http_hosts(subdomains, headers, concurrency, quiet):
     if not subdomains:
         return {}
-
     spinner = Spinner(
         f"Probing {len(subdomains)} hosts for active HTTP/HTTPS services..."
     )
     if not quiet:
         spinner.start()
-
-    sem = asyncio.Semaphore(concurrency)
-    limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
-
-    # `verify=False` is intentional for recon; suppress any warnings it emits.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        async with httpx.AsyncClient(
-            headers=headers,
-            follow_redirects=True,
-            verify=False,
-            limits=limits,
-        ) as client:
-            results = await batch_gather(
-                lambda sub: probe_single_host(client, sub, sem),
-                subdomains,
-                batch_size=2000,
+    try:
+        sem = asyncio.Semaphore(concurrency)
+        limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            async with httpx.AsyncClient(
+                headers=headers, follow_redirects=True, verify=False, limits=limits,
+            ) as client:
+                results = await batch_gather(
+                    lambda s: probe_single_host(client, s, sem),
+                    subdomains, batch_size=2000,
+                )
+        probed = {s: info for s, info in results if info}
+    finally:
+        if not quiet:
+            await spinner.stop(
+                f"HTTP Probing complete: "
+                f"{len(locals().get('probed', {}))} active web servers responding."
             )
-
-    probed = {sub: info for sub, info in results if info}
-    if not quiet:
-        await spinner.stop(
-            f"HTTP Probing complete: "
-            f"{len(probed)} active web servers responding."
-        )
     return probed
 
 
 # ======================================================================
 # MAIN ORCHESTRATOR
 # ======================================================================
-async def enumerate_single_domain(
-    client: httpx.AsyncClient,
-    domain: str,
-    api_keys: dict[str, str],
-    quiet: bool,
-) -> set[str]:
-    spinner = Spinner(f"Querying OSINT sources for {domain}...")
+async def enumerate_single_domain(client, domain, api_keys, quiet):
+    active = get_active_sources(api_keys)
+    if not active:
+        return set()
+    spinner = Spinner(f"Querying {len(active)} OSINT sources for {domain}...")
     if not quiet:
         spinner.start()
-
-    vlog(f"Launching OSINT queries for {domain}")
-    tasks = [
-        fetch_crtsh(client, domain),
-        fetch_hackertarget(client, domain),
-        fetch_alienvault(client, domain),
-        fetch_anubis(client, domain),
-        fetch_wayback(client, domain),
-        fetch_urlscan(client, domain, api_keys.get("urlscan", "")),
-        fetch_virustotal(client, domain, api_keys.get("virustotal", "")),
-        fetch_certspotter(client, domain, api_keys.get("certspotter", "")),
-        fetch_chaos(client, domain, api_keys.get("chaos", "")),
-    ]
-    results = await asyncio.gather(*tasks)
-    merged: set[str] = set().union(*results)
-
-    if not quiet:
-        await spinner.stop(
-            f"Discovered {len(merged)} unique passive subdomains for {domain}"
+    try:
+        tasks = [
+            fn(client, domain, api_keys.get(name, ""))
+            for name, fn in active
+        ]
+        results = await asyncio.gather(*tasks)
+        merged = set().union(*results) if results else set()
+    finally:
+        if not quiet:
+            await spinner.stop(
+                f"Discovered {len(locals().get('merged', set()))} "
+                f"unique passive subdomains for {domain}"
+            )
+    if not merged and not quiet:
+        print(
+            f"{YELLOW}[!] No subdomains discovered for {domain}. "
+            f"Run with -v for per-source details.{RESET}",
+            file=sys.stderr,
         )
     return merged
+
+
+def _load_targets_from_file(path: Path) -> list[str]:
+    raw = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    out = []
+    for line in raw:
+        d = normalize_domain_input(line)
+        if d:
+            out.append(d)
+    return out
+
+
+def _parse_match_codes(spec: str | None, probe_enabled: bool) -> set[int] | None:
+    if not spec:
+        return None
+    if not probe_enabled:
+        print(
+            f"{YELLOW}[!] --match-codes ignored without --probe{RESET}",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        codes = {int(c.strip()) for c in spec.split(",") if c.strip()}
+        if not codes:
+            raise ValueError("empty")
+        return codes
+    except ValueError:
+        print(
+            f"{RED}[!] Error: --match-codes must be comma-separated integers "
+            f"(e.g. 200,301,403){RESET}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 async def run_engine(args: argparse.Namespace) -> None:
@@ -828,19 +1609,15 @@ async def run_engine(args: argparse.Namespace) -> None:
     _VERBOSE = bool(args.verbose)
 
     config_path = Path(args.config).expanduser()
-    config = init_or_load_config(config_path)
+    config = init_or_load_config(config_path, create=not args.show_config)
 
-    # -------- --show-config short-circuit --------
     if args.show_config:
         print_config_summary(config, config_path)
         return
-    # ---------------------------------------------
 
     api_keys = config["api_keys"]
-    # Baseline headers (config) → used by both passive client and probe client
     config_headers = dict(config["headers"])
 
-    # Probe-only headers: config + any CLI -H values
     probe_headers = dict(config_headers)
     if args.header:
         for raw_h in args.header:
@@ -848,15 +1625,17 @@ async def run_engine(args: argparse.Namespace) -> None:
                 k, v = raw_h.split(":", 1)
                 probe_headers[k.strip()] = v.strip()
 
-    # ------------------------------------------------------------------
-    # Resolve target list
-    # ------------------------------------------------------------------
+    # -------- Parse --match-codes --------
+    match_codes = _parse_match_codes(args.match_codes, args.probe)
+
+    # -------- Load targets & detect mode --------
     targets: list[str] = []
     if args.domain:
         d = normalize_domain_input(args.domain)
         if d:
             targets.append(d)
 
+    input_is_subdomains = False
     if args.input:
         input_path = Path(args.input).expanduser()
         if not input_path.is_file():
@@ -865,12 +1644,36 @@ async def run_engine(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        for line in input_path.read_text(
-            encoding="utf-8", errors="ignore"
-        ).splitlines():
-            d = normalize_domain_input(line)
-            if d and d not in targets:
+        file_targets = _load_targets_from_file(input_path)
+        if not file_targets:
+            print(
+                f"{RED}[!] Error: No valid entries in {input_path}{RESET}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Determine whether the input file is a subdomain list
+        if args.probe_only:
+            input_is_subdomains = True
+        elif args.probe and not args.domain:
+            if detect_input_mode(file_targets) == "subdomains":
+                input_is_subdomains = True
+                if not args.silent:
+                    print(
+                        f"{CYAN}[i] Input detected as subdomain list — "
+                        f"probing directly (skipping discovery).{RESET}"
+                    )
+                    print(
+                        f"{DIM}    Use --probe-only to force this mode, "
+                        f"or pass -d <apex> to force discovery.{RESET}"
+                    )
+
+        for d in file_targets:
+            if d not in targets:
                 targets.append(d)
+
+    if args.probe_only and args.domain and not args.input:
+        input_is_subdomains = True
 
     if not targets:
         print(
@@ -880,41 +1683,63 @@ async def run_engine(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    # In subdomain-input mode, do NOT auto-enable -r (hosts were likely
+    # already resolved when the file was produced). In apex mode, keep the
+    # legacy `--probe implies -r` optimization.
+    if args.probe and not args.resolve and not input_is_subdomains:
+        args.resolve = True
+        args._probe_implied_resolve = True
+
+    # -------- Info panel --------
     if not args.silent:
-        active_keys = [k for k, v in api_keys.items() if v]
-        print(f"{CYAN}[i] Loaded Targets:{RESET}      {len(targets)} domain(s)")
+        keyed_active = [
+            s for s, (_, req) in SOURCE_DISPATCH.items()
+            if req and api_keys.get(s)
+        ]
+        keyless_active = [
+            s for s, (_, req) in SOURCE_DISPATCH.items() if not req
+        ]
+        if input_is_subdomains:
+            print(f"{CYAN}[i] Mode:{RESET}              direct (--probe-only)")
+            print(f"{CYAN}[i] Input subdomains:{RESET}   {len(targets)}")
+        else:
+            print(f"{CYAN}[i] Mode:{RESET}              discover-then-process")
+            print(f"{CYAN}[i] Loaded Targets:{RESET}     {len(targets)} domain(s)")
+            print(
+                f"{CYAN}[i] Active Sources:{RESET}     "
+                f"{len(keyless_active)} keyless + {len(keyed_active)} keyed "
+                f"({len(keyless_active) + len(keyed_active)} total)"
+            )
         print(
-            f"{CYAN}[i] Probe Headers:{RESET}       "
+            f"{CYAN}[i] Probe Headers:{RESET}      "
             f"{', '.join(probe_headers.keys())}"
         )
-        print(
-            f"{CYAN}[i] Active API Keys:{RESET}     "
-            f"{', '.join(active_keys) if active_keys else 'None (using free keyless OSINT engines)'}"
-        )
-
-    # ------------------------------------------------------------------
-    # Passive discovery
-    # ------------------------------------------------------------------
-    all_discovered: set[str] = set()
-    limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
-    async with httpx.AsyncClient(
-        headers=config_headers, follow_redirects=True, limits=limits
-    ) as client:
-        for domain in targets:
-            subs = await enumerate_single_domain(
-                client, domain, api_keys, args.silent
+        if match_codes:
+            print(
+                f"{CYAN}[i] Match Codes:{RESET}        {sorted(match_codes)}"
             )
-            all_discovered.update(subs)
 
-    if not args.silent:
-        print(
-            f"\n{GREEN}{BOLD}[✓] Total Unique Passive Subdomains Discovered: "
-            f"{len(all_discovered)}{RESET}"
-        )
+    # -------- Stage 1: Discovery (skipped in subdomain mode) --------
+    all_discovered: set[str] = set()
+    if input_is_subdomains:
+        all_discovered = set(targets)
+    else:
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+        async with httpx.AsyncClient(
+            headers=config_headers, follow_redirects=True, limits=limits
+        ) as client:
+            for domain in targets:
+                subs = await enumerate_single_domain(
+                    client, domain, api_keys, args.silent
+                )
+                all_discovered.update(subs)
+        if not args.silent:
+            print(
+                f"\n{GREEN}{BOLD}[✓] Total Unique Passive Subdomains "
+                f"Discovered: {len(all_discovered)}{RESET}"
+            )
 
-    # ------------------------------------------------------------------
-    # DNS resolution
-    # ------------------------------------------------------------------
+    # -------- Stage 2: DNS resolution --------
     resolved_map: dict[str, list[str]] = {}
     if args.resolve and all_discovered:
         nameservers = [
@@ -933,40 +1758,81 @@ async def run_engine(args: argparse.Namespace) -> None:
     else:
         final_subs = sorted(all_discovered)
 
-    # ------------------------------------------------------------------
-    # HTTP probing
-    # ------------------------------------------------------------------
+    # -------- Stage 3: HTTP probing + status filter --------
     probed_map: dict[str, dict] = {}
     if args.probe and final_subs:
         probed_map = await probe_http_hosts(
             final_subs, probe_headers, args.threads, args.silent
         )
 
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
-    if final_subs and not args.silent:
-        print(
-            f"\n{CYAN}{BOLD}--- SUBNORYX Final Results "
-            f"({len(final_subs)}) ---{RESET}"
-        )
-    for sub in final_subs:
-        if args.silent:
-            print(sub)
-            continue
-        ip_str = (
-            f" {YELLOW}[{', '.join(resolved_map[sub])}]{RESET}"
-            if sub in resolved_map else ""
-        )
-        probe_str = ""
-        if sub in probed_map:
-            info = probed_map[sub]
-            probe_str = f" -> {GREEN}{info['url']} [{info['status']}]"
-            if info.get("title"):
-                probe_str += f" [{info['title']}]"
-            probe_str += RESET
-        print(f"  {sub}{ip_str}{probe_str}")
+        if match_codes:
+            original = len(probed_map)
+            probed_map = {
+                s: i for s, i in probed_map.items()
+                if i["status"] in match_codes
+            }
+            if not args.silent:
+                print(
+                    f"{GREEN}[✓] Status filter {sorted(match_codes)}: "
+                    f"{len(probed_map)} matched / {original} responsive{RESET}"
+                )
 
+        # When probing, final_subs reflects only surviving (responsive or
+        # matched) hosts.
+        final_subs = sorted(probed_map.keys())
+
+    # -------- Output: list suppressed by default --------
+    if args.silent:
+        # Silent mode preserves the original pipe-friendly contract:
+        # raw one-per-line on stdout.
+        for sub in final_subs:
+            print(sub)
+    else:
+        # Human-facing summary block
+        print(f"\n{CYAN}{BOLD}─── SUBNORYX Summary ───{RESET}")
+        if input_is_subdomains:
+            print(f"  {BOLD}Input subdomains:{RESET}  {len(targets)}")
+        else:
+            print(f"  {BOLD}Discovered:{RESET}        {len(all_discovered)}")
+        if args.resolve:
+            print(f"  {BOLD}Resolved:{RESET}          {len(resolved_map)}")
+        if args.probe:
+            print(f"  {BOLD}Responsive:{RESET}        {len(probed_map)}")
+            if match_codes:
+                print(
+                    f"  {BOLD}Matched:{RESET}           {len(final_subs)} "
+                    f"({sorted(match_codes)})"
+                )
+        elif not input_is_subdomains:
+            print(f"  {BOLD}Final:{RESET}             {len(final_subs)}")
+
+        # Optional formatted list
+        if args.show_list and final_subs:
+            print(
+                f"\n{CYAN}{BOLD}─── Subdomain List "
+                f"({len(final_subs)}) ───{RESET}"
+            )
+            for sub in final_subs:
+                ip_str = (
+                    f" {YELLOW}[{', '.join(resolved_map[sub])}]{RESET}"
+                    if sub in resolved_map else ""
+                )
+                probe_str = ""
+                if sub in probed_map:
+                    info = probed_map[sub]
+                    probe_str = f" -> {GREEN}{info['url']} [{info['status']}]"
+                    if info.get("title"):
+                        probe_str += f" [{info['title']}]"
+                    probe_str += RESET
+                print(f"  {sub}{ip_str}{probe_str}")
+        elif final_subs:
+            print(
+                f"\n  {DIM}(subdomain list suppressed — "
+                f"use --show-list to print, -o FILE to save, "
+                f"or -s for raw pipe output){RESET}"
+            )
+
+    # -------- Save files --------
     if args.output:
         out_path = Path(args.output).expanduser()
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -986,11 +1852,15 @@ async def run_engine(args: argparse.Namespace) -> None:
         payload = {
             "version": __version__,
             "license": LICENSE,
+            "input_mode": "subdomains" if input_is_subdomains else "apex",
             "targets": targets,
+            "match_codes": sorted(match_codes) if match_codes else None,
             "discovered_count": len(all_discovered),
             "resolved_count": len(resolved_map),
-            "probed_count": len(probed_map),
+            "responsive_count": len(probed_map),
+            "final_count": len(final_subs),
             "subdomains": final_subs,
+            "discovered": sorted(all_discovered),
             "resolved": resolved_map,
             "probed": probed_map,
         }
@@ -1007,15 +1877,16 @@ async def run_engine(args: argparse.Namespace) -> None:
 # CLI
 # ----------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    # --man / `man` subcommand anywhere on the command line
     if "--man" in sys.argv[1:] or (
         len(sys.argv) > 1 and sys.argv[1] == "man"
     ):
         print_manual()
         sys.exit(0)
 
-    # Suppress the banner only for silent mode (keep it for -h / --help)
-    suppress_banner = any(flag in sys.argv[1:] for flag in ("-s", "--silent"))
+    suppress_banner = any(
+        flag in sys.argv[1:]
+        for flag in ("-s", "--silent", "-V", "--version")
+    )
     if not suppress_banner:
         print_banner()
 
@@ -1023,29 +1894,42 @@ def parse_args() -> argparse.Namespace:
         prog="subnoryx",
         description=(
             "SUBNORYX — Fast Async Subdomain Enumerator with "
-            "Multi-Domain, DNS Resolution & Safe-Harbor Support"
+            "Two-Stage Workflow & Status-Code Filtering"
         ),
     )
     target_group = parser.add_argument_group("Target Selection")
     target_group.add_argument(
-        "-d", "--domain", help="Single target domain (e.g., example.com)"
+        "-d", "--domain",
+        help="Single target domain (apex by default; subdomain with --probe-only)",
     )
     target_group.add_argument(
-        "-i", "--input", help="File containing list of domains (e.g., scope.txt)"
+        "-i", "--input",
+        help="Scope file (apex domains to enumerate, or subdomains with --probe)",
     )
 
-    recon_group = parser.add_argument_group("Resolution & Probing")
+    recon_group = parser.add_argument_group("Resolution, Probing & Filtering")
     recon_group.add_argument(
         "-r", "--resolve", action="store_true",
-        help="Filter out dead subdomains via async DNS resolution (aiodns)",
+        help="Filter dead subdomains via async DNS resolution (aiodns)",
     )
     recon_group.add_argument(
         "--probe", action="store_true",
-        help="Probe discovered subdomains for live HTTP/HTTPS status & titles",
+        help="Probe hosts for HTTP/HTTPS status & titles",
+    )
+    recon_group.add_argument(
+        "--probe-only", action="store_true",
+        help="Skip discovery. Treat -d/-i as subdomains to probe directly. "
+             "Implies --probe.",
+    )
+    recon_group.add_argument(
+        "--match-codes", metavar="CODES",
+        help="Comma-separated HTTP status codes to keep during probing "
+             "(e.g. 200,301,403). Filters -o and --json output. "
+             "Without this flag, all responsive codes are kept.",
     )
     recon_group.add_argument(
         "-t", "--threads", type=int, default=100,
-        help="Concurrency limit for DNS resolution / probing (default: 100)",
+        help="Concurrency limit (default: 100, min: 1)",
     )
     recon_group.add_argument(
         "--resolvers",
@@ -1055,11 +1939,16 @@ def parse_args() -> argparse.Namespace:
 
     config_group = parser.add_argument_group("Configuration & Output")
     config_group.add_argument(
-        "-o", "--output", help="Output file path to save clean subdomain list"
+        "-o", "--output",
+        help="Save filtered subdomain list (plain text)",
     )
     config_group.add_argument(
         "--json", metavar="FILE",
-        help="Save full results (subdomains + IPs + HTTP probe info) as JSON",
+        help="Save full structured results (subdomains + IPs + probe details)",
+    )
+    config_group.add_argument(
+        "--show-list", action="store_true",
+        help="Print the full subdomain list to terminal (default: suppressed)",
     )
     config_group.add_argument(
         "-c", "--config", default=str(DEFAULT_CONFIG_PATH),
@@ -1067,23 +1956,19 @@ def parse_args() -> argparse.Namespace:
     )
     config_group.add_argument(
         "--show-config", action="store_true",
-        help="Print resolved configuration (headers + API key status) and exit",
+        help="Print resolved configuration (masked) and exit",
     )
     config_group.add_argument(
         "-H", "--header", action="append", metavar="KEY:VALUE",
-        help=(
-            "Custom HTTP header for PROBING requests only "
-            "(e.g. -H 'X-Bug-Bounty: HackerOne-user'). "
-            "API-call headers must be set in the config file."
-        ),
+        help="Custom HTTP header for probing only (repeatable)",
     )
     config_group.add_argument(
         "-s", "--silent", action="store_true",
-        help="Silent mode (print only raw subdomains to stdout for piping)",
+        help="Silent mode (raw subdomains on stdout for piping)",
     )
     config_group.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Enable verbose output on stderr",
+        help="Verbose per-source logs on stderr",
     )
     parser.add_argument(
         "-V", "--version", action="version",
@@ -1091,9 +1976,26 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+
+    # Validation
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
+
+    # --probe-only implies --probe
+    if args.probe_only:
+        args.probe = True
+
+    # --probe implies -r ONLY in apex mode; the apex/subdomain decision is
+    # made inside run_engine() once we can inspect the input file.
+    if args.resolve:
+        resolvers = [ns.strip() for ns in args.resolvers.split(",") if ns.strip()]
+        if not resolvers:
+            parser.error("--resolvers must contain at least one resolver IP")
+
     if not args.domain and not args.input and not args.show_config:
         parser.print_help()
         sys.exit(1)
+
     return args
 
 
