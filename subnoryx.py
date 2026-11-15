@@ -50,7 +50,7 @@ try:
 except ImportError:
     HAS_YAML = False
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 LICENSE = "GPL-3.0"
 
 # ----------------------------------------------------------------------
@@ -237,7 +237,8 @@ def print_manual() -> None:
         Silent mode — raw subdomains on stdout, no banner/spinner.
 
     {BOLD}-v, --verbose{RESET}
-        Verbose per-source logs on stderr.
+        Verbose per-source and per-host logs on stderr. In --probe-only
+        mode, logs each probe attempt (success code or failure reason).
 
     {BOLD}-V, --version{RESET}
         Print version and exit.
@@ -1518,6 +1519,7 @@ async def resolve_subdomains(subdomains, concurrency, nameservers, quiet):
 # ======================================================================
 async def probe_single_host(client, sub, sem):
     async with sem:
+        last_err = None
         for scheme in ("https", "http"):
             url = f"{scheme}://{sub}"
             try:
@@ -1531,19 +1533,26 @@ async def probe_single_host(client, sub, sem):
                     m.group(1).strip().replace("\n", " ")[:60]
                     if m else ""
                 )
+                vlog(f"probe {scheme.upper()} {sub} -> {resp.status_code}")
                 return (sub, {
                     "url": str(resp.url),
                     "status": resp.status_code,
                     "title": title,
                 })
-            except Exception:
+            except Exception as e:
+                last_err = type(e).__name__
                 continue
+        vlog(f"probe FAIL {sub} ({last_err or 'no response'})")
         return (sub, None)
 
 
 async def probe_http_hosts(subdomains, headers, concurrency, quiet):
     if not subdomains:
         return {}
+    vlog(
+        f"Probing {len(subdomains)} hosts "
+        f"(concurrency={concurrency}, timeout=8s/scheme)"
+    )
     spinner = Spinner(
         f"Probing {len(subdomains)} hosts for active HTTP/HTTPS services..."
     )
@@ -2001,7 +2010,7 @@ def parse_args() -> argparse.Namespace:
     )
     config_group.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Verbose per-source logs on stderr",
+        help="Verbose per-source and per-host logs on stderr",
     )
     parser.add_argument(
         "-V", "--version", action="version",
