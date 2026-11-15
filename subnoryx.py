@@ -50,7 +50,7 @@ try:
 except ImportError:
     HAS_YAML = False
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 LICENSE = "GPL-3.0"
 
 # ----------------------------------------------------------------------
@@ -103,6 +103,10 @@ _DEFAULT_CONFIG_HEADER = (
     "#\n"
     "# Sources with an empty key are SKIPPED at runtime.\n"
     "# Sources with a key configured are QUERIED during enumeration.\n"
+    "#\n"
+    "# Composite keys (colon-separated):\n"
+    "#   censys: \"API_ID:API_SECRET\"   (https://search.censys.io/account/api)\n"
+    "#   fofa:   \"email:api_key\"       (https://fofa.info/personalData)\n"
     "# =====================================================================\n"
 )
 
@@ -151,7 +155,8 @@ def print_manual() -> None:
     {GREEN}subnoryx{RESET} [{BOLD}-d{RESET} DOMAIN | {BOLD}-i{RESET} FILE] [{BOLD}-r{RESET}] [{BOLD}--probe{RESET}] [{BOLD}--probe-only{RESET}]
              [{BOLD}--match-codes{RESET} CODES] [{BOLD}--show-list{RESET}] [{BOLD}-t{RESET} THREADS]
              [{BOLD}--resolvers{RESET} LIST] [{BOLD}-o{RESET} FILE] [{BOLD}--json{RESET} FILE] [{BOLD}-H{RESET} KEY:VALUE]
-             [{BOLD}-c{RESET} PATH] [{BOLD}--show-config{RESET}] [{BOLD}-s{RESET}] [{BOLD}-v{RESET}] [{BOLD}-V{RESET}] [{BOLD}--man{RESET}]
+             [{BOLD}-c{RESET} PATH] [{BOLD}--show-config{RESET}] [{BOLD}--init-config{RESET}]
+             [{BOLD}-s{RESET}] [{BOLD}-v{RESET}] [{BOLD}-V{RESET}] [{BOLD}--man{RESET}]
 
 {BOLD}TWO-STAGE WORKFLOW{RESET}
     Stage 1 — Discovery:
@@ -222,7 +227,11 @@ def print_manual() -> None:
         Config file path (default: ~/.config/subnoryx/config.yaml).
 
     {BOLD}--show-config{RESET}
-        Print masked config and exit.
+        Print masked config and exit. Read-only (never creates the file).
+
+    {BOLD}--init-config{RESET}
+        Create the default config file if missing, then exit.
+        Combine with --show-config to create and print in one step.
 
     {BOLD}-s, --silent{RESET}
         Silent mode — raw subdomains on stdout, no banner/spinner.
@@ -404,6 +413,9 @@ def print_config_summary(config: dict, config_path: Path) -> None:
             f"  {DIM}(none configured — keyless sources only: "
             f"{', '.join(sorted(KEYLESS_SOURCES))}){RESET}"
         )
+        print(
+            f"\n  {DIM}Create the config file with: subnoryx --init-config{RESET}"
+        )
     else:
         print(
             f"\n  {GREEN}{active}{RESET} active / "
@@ -453,8 +465,8 @@ def detect_input_mode(lines: list[str]) -> str:
     Heuristic: distinguish a subdomain list from an apex-domain list.
 
     Returns "subdomains" only when a strong signal is present:
-      - ≥2 non-comment lines
-      - all lines share a common suffix of ≥2 labels
+      - >=2 non-comment lines
+      - all lines share a common suffix of >=2 labels
       - every line has MORE labels than that shared suffix
         (i.e. every line is a strict subdomain of the common apex)
 
@@ -476,8 +488,6 @@ def detect_input_mode(lines: list[str]) -> str:
         else:
             break
 
-    # Strict subdomain signal: shared apex of ≥2 labels AND every line
-    # extends it with at least one extra label.
     if suffix_len >= 2 and all(len(l) > suffix_len for l in parsed):
         return "subdomains"
     return "apex"
@@ -514,7 +524,7 @@ async def http_get_with_retry(
 
 
 # ======================================================================
-# FETCH FUNCTIONS (unchanged from v1.1.0 — all 40 sources)
+# FETCH FUNCTIONS — all 43 sources
 # ======================================================================
 async def fetch_crtsh(client, domain, key=""):
     subs = set()
@@ -1609,7 +1619,22 @@ async def run_engine(args: argparse.Namespace) -> None:
     _VERBOSE = bool(args.verbose)
 
     config_path = Path(args.config).expanduser()
-    config = init_or_load_config(config_path, create=not args.show_config)
+    # --show-config is read-only by default. --init-config forces creation,
+    # and any normal scan also creates the file on first run.
+    should_create = args.init_config or not args.show_config
+    config = init_or_load_config(config_path, create=should_create)
+
+    # --init-config alone: create + confirm + exit.
+    if args.init_config and not args.show_config:
+        if config_path.exists():
+            print(f"{GREEN}[✓]{RESET} Config ready: {config_path}")
+        else:
+            print(
+                f"{RED}[!]{RESET} Failed to create config: {config_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
 
     if args.show_config:
         print_config_summary(config, config_path)
@@ -1625,10 +1650,8 @@ async def run_engine(args: argparse.Namespace) -> None:
                 k, v = raw_h.split(":", 1)
                 probe_headers[k.strip()] = v.strip()
 
-    # -------- Parse --match-codes --------
     match_codes = _parse_match_codes(args.match_codes, args.probe)
 
-    # -------- Load targets & detect mode --------
     targets: list[str] = []
     if args.domain:
         d = normalize_domain_input(args.domain)
@@ -1652,7 +1675,6 @@ async def run_engine(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
-        # Determine whether the input file is a subdomain list
         if args.probe_only:
             input_is_subdomains = True
         elif args.probe and not args.domain:
@@ -1683,14 +1705,10 @@ async def run_engine(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # In subdomain-input mode, do NOT auto-enable -r (hosts were likely
-    # already resolved when the file was produced). In apex mode, keep the
-    # legacy `--probe implies -r` optimization.
     if args.probe and not args.resolve and not input_is_subdomains:
         args.resolve = True
         args._probe_implied_resolve = True
 
-    # -------- Info panel --------
     if not args.silent:
         keyed_active = [
             s for s, (_, req) in SOURCE_DISPATCH.items()
@@ -1719,7 +1737,6 @@ async def run_engine(args: argparse.Namespace) -> None:
                 f"{CYAN}[i] Match Codes:{RESET}        {sorted(match_codes)}"
             )
 
-    # -------- Stage 1: Discovery (skipped in subdomain mode) --------
     all_discovered: set[str] = set()
     if input_is_subdomains:
         all_discovered = set(targets)
@@ -1739,7 +1756,6 @@ async def run_engine(args: argparse.Namespace) -> None:
                 f"Discovered: {len(all_discovered)}{RESET}"
             )
 
-    # -------- Stage 2: DNS resolution --------
     resolved_map: dict[str, list[str]] = {}
     if args.resolve and all_discovered:
         nameservers = [
@@ -1758,7 +1774,6 @@ async def run_engine(args: argparse.Namespace) -> None:
     else:
         final_subs = sorted(all_discovered)
 
-    # -------- Stage 3: HTTP probing + status filter --------
     probed_map: dict[str, dict] = {}
     if args.probe and final_subs:
         probed_map = await probe_http_hosts(
@@ -1777,18 +1792,12 @@ async def run_engine(args: argparse.Namespace) -> None:
                     f"{len(probed_map)} matched / {original} responsive{RESET}"
                 )
 
-        # When probing, final_subs reflects only surviving (responsive or
-        # matched) hosts.
         final_subs = sorted(probed_map.keys())
 
-    # -------- Output: list suppressed by default --------
     if args.silent:
-        # Silent mode preserves the original pipe-friendly contract:
-        # raw one-per-line on stdout.
         for sub in final_subs:
             print(sub)
     else:
-        # Human-facing summary block
         print(f"\n{CYAN}{BOLD}─── SUBNORYX Summary ───{RESET}")
         if input_is_subdomains:
             print(f"  {BOLD}Input subdomains:{RESET}  {len(targets)}")
@@ -1806,7 +1815,6 @@ async def run_engine(args: argparse.Namespace) -> None:
         elif not input_is_subdomains:
             print(f"  {BOLD}Final:{RESET}             {len(final_subs)}")
 
-        # Optional formatted list
         if args.show_list and final_subs:
             print(
                 f"\n{CYAN}{BOLD}─── Subdomain List "
@@ -1832,7 +1840,6 @@ async def run_engine(args: argparse.Namespace) -> None:
                 f"or -s for raw pipe output){RESET}"
             )
 
-    # -------- Save files --------
     if args.output:
         out_path = Path(args.output).expanduser()
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1885,7 +1892,7 @@ def parse_args() -> argparse.Namespace:
 
     suppress_banner = any(
         flag in sys.argv[1:]
-        for flag in ("-s", "--silent", "-V", "--version")
+        for flag in ("-s", "--silent", "-V", "--version", "--init-config")
     )
     if not suppress_banner:
         print_banner()
@@ -1956,7 +1963,11 @@ def parse_args() -> argparse.Namespace:
     )
     config_group.add_argument(
         "--show-config", action="store_true",
-        help="Print resolved configuration (masked) and exit",
+        help="Print resolved configuration (masked) and exit (read-only)",
+    )
+    config_group.add_argument(
+        "--init-config", action="store_true",
+        help="Create the default config file if missing, then exit",
     )
     config_group.add_argument(
         "-H", "--header", action="append", metavar="KEY:VALUE",
@@ -1977,22 +1988,23 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    # Validation
     if args.threads < 1:
         parser.error("--threads must be >= 1")
 
-    # --probe-only implies --probe
     if args.probe_only:
         args.probe = True
 
-    # --probe implies -r ONLY in apex mode; the apex/subdomain decision is
-    # made inside run_engine() once we can inspect the input file.
     if args.resolve:
         resolvers = [ns.strip() for ns in args.resolvers.split(",") if ns.strip()]
         if not resolvers:
             parser.error("--resolvers must contain at least one resolver IP")
 
-    if not args.domain and not args.input and not args.show_config:
+    if (
+        not args.domain
+        and not args.input
+        and not args.show_config
+        and not args.init_config
+    ):
         parser.print_help()
         sys.exit(1)
 
