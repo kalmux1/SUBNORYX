@@ -7,11 +7,11 @@
 /____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
 </pre>
 
-**SUBNORYX v1.2.1** — Fast Async Subdomain Enumerator & Recon Engine
+**SUBNORYX v1.2.2** — Fast Async Subdomain Enumerator & Recon Engine
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.1-cyan)]()
+[![Version](https://img.shields.io/badge/version-1.2.2-cyan)]()
 [![Async](https://img.shields.io/badge/asyncio-httpx%20%2B%20aiodns-magenta)]()
 
 *~By Kalmux*
@@ -31,7 +31,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
-- [What's New in v1.2.1](#whats-new-in-v121)
+- [What's New in v1.2.2](#whats-new-in-v122)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -66,12 +66,33 @@ Built on `asyncio` + `httpx`, it is designed to be:
 
 ---
 
-## What's New in v1.2.1
+## What's New in v1.2.2
 
-- 🛠️ **`--init-config` flag** — explicitly create the default config file  (`~/.config/subnoryx/config.yaml`) without running a scan. Idempotent.
-- 📦 **Installer now initializes the config** — a fresh `./install.sh` run  creates the 40-key config template automatically. The installer delegates  to `subnoryx --init-config` so the template stays in one place.
-- 💡 **Better empty-config hint** — `--show-config` on a missing config now  prints `Create the config file with: subnoryx --init-config` instead of  leaving you to guess.
-- 🐛 **No behaviour change to `--show-config`** — it remains read-only, so  safe for scripts and CI.
+- 🐛 **Wayback source hardening** — `fetch_wayback()` no longer crashes on
+  non-JSON responses. Wayback's CDX endpoint returns plain-text errors
+  (`Blocked`, `Too many requests`) or empty bodies when rate-limited; the
+  previous code called `resp.json()` unconditionally and silently lost the
+  source. Now every failure mode (non-200 status, empty body, non-JSON
+  response, malformed structure) is detected, logged under `-v`, and handled
+  gracefully without affecting the other sources.
+- 🛠️ **No other changes** — every other fetcher, the dispatch registry,
+  DNS resolution, probing, orchestrator, and CLI are byte-identical to
+  v1.2.1.
+
+### What's New in v1.2.1
+
+- 🛠️ **`--init-config` flag** — explicitly create the default config file
+  (`~/.config/subnoryx/config.yaml`) without running a scan. Idempotent.
+- 📦 **Installer now initializes the config** — a fresh `./install.sh` run
+  creates the 40-key config template automatically. The installer delegates
+  to `subnoryx --init-config` so the template stays in one place.
+- 💡 **Better empty-config hint** — `--show-config` on a missing config now
+  prints `Create the config file with: subnoryx --init-config` instead of
+  leaving you to guess.
+- 🐛 **No behaviour change to `--show-config`** — it remains read-only, so
+  safe for scripts and CI.
+
+### What's New in v1.2.0
 
 ### What's new in v1.2.0
 
@@ -454,7 +475,7 @@ vpn.example.com
 Structured output including discovery, resolution, probe, and filter state:
 ```json
 {
-  "version": "1.2.1",
+  "version": "1.2.2",
   "license": "GPL-3.0",
   "input_mode": "subdomains",
   "targets": ["api.example.com", "mail.example.com"],
