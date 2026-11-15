@@ -50,7 +50,7 @@ try:
 except ImportError:
     HAS_YAML = False
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 LICENSE = "GPL-3.0"
 
 # ----------------------------------------------------------------------
@@ -596,12 +596,34 @@ async def fetch_wayback(client, domain, key=""):
     )
     try:
         resp = await http_get_with_retry(client, url, timeout=30.0)
-        if resp.status_code == 200:
-            for row in resp.json()[1:]:
-                if row:
-                    c = clean_subdomain(urlparse(row[0]).hostname or "", domain)
-                    if c:
-                        subs.add(c)
+        if resp.status_code != 200:
+            vlog(f"Wayback HTTP {resp.status_code} for {domain}")
+            return subs
+
+        text = resp.text.strip()
+        if not text:
+            vlog(f"Wayback returned empty body for {domain} (likely rate-limited)")
+            return subs
+
+        # Wayback's CDX endpoint returns plain-text errors ("Blocked",
+        # "Too many requests") instead of JSON when rate-limited.
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            vlog(
+                f"Wayback returned non-JSON for {domain} "
+                f"(likely rate-limited or no archived data)"
+            )
+            return subs
+
+        if not isinstance(data, list) or len(data) < 2:
+            return subs
+
+        for row in data[1:]:
+            if row and isinstance(row, list) and row:
+                c = clean_subdomain(urlparse(row[0]).hostname or "", domain)
+                if c:
+                    subs.add(c)
     except Exception as e:
         vlog(f"Wayback failed for {domain}: {e}")
     return subs
