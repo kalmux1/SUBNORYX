@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# SUBNORYX Installer (v1.2.1)
+# SUBNORYX Installer (v1.2.2)
 # - Marks subnoryx.py executable
 # - Initializes ~/.config/subnoryx/config.yaml (40-key template)
 # - Registers `subnoryx` alias in ~/.bashrc / ~/.zshrc
@@ -185,7 +185,7 @@ cat <<'EOF'
  ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
 /____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
 EOF
-echo -e "${RESET}${CYAN}           Installer  (v1.2.1)${RESET}"
+echo -e "${RESET}${CYAN}           Installer  (v1.2.2)${RESET}"
 
 # ---- Sanity: subnoryx.py present ----------------------------------
 title "Locating subnoryx.py"
