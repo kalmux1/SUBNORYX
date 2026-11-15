@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =====================================================================
-# SUBNORYX Installer (v1.2.0)
+# SUBNORYX Installer (v1.2.1)
 # - Marks subnoryx.py executable
+# - Initializes ~/.config/subnoryx/config.yaml (40-key template)
 # - Registers `subnoryx` alias in ~/.bashrc / ~/.zshrc
 # - Optionally creates /usr/local/bin symlink
 # - Sources shell rc file (or prints the command to run)
@@ -22,7 +23,6 @@ CYAN="\033[0;36m"
 BOLD="\033[1m"
 RESET="\033[0m"
 
-# Honor NO_COLOR
 if [[ -n "${NO_COLOR:-}" ]]; then
     GREEN=""; YELLOW=""; RED=""; CYAN=""; BOLD=""; RESET=""
 fi
@@ -90,7 +90,7 @@ detect_rc_file() {
 
 RC_FILE="$(detect_rc_file)"
 
-# ---- Pre-flight: Python 3 must exist (used by install AND uninstall) ----
+# ---- Pre-flight: Python 3 must exist ------------------------------
 PYTHON_BIN=""
 if command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
@@ -168,6 +168,9 @@ if [[ "$DO_UNINSTALL" -eq 1 ]]; then
         fi
     fi
     ok "Uninstall complete. Restart your shell or run: source $RC_FILE"
+    echo ""
+    info "Your config was NOT removed. To delete it:"
+    echo "    rm -rf ~/.config/subnoryx"
     exit 0
 fi
 
@@ -182,7 +185,7 @@ cat <<'EOF'
  ___/ / /_/ / /_/ / /|  / /_/ / _, _/ / //   |
 /____/\____/_____/_/ |_/\____/_/ |_| /_//_/|_|
 EOF
-echo -e "${RESET}${CYAN}           Installer  (v1.2.0)${RESET}"
+echo -e "${RESET}${CYAN}           Installer  (v1.2.1)${RESET}"
 
 # ---- Sanity: subnoryx.py present ----------------------------------
 title "Locating subnoryx.py"
@@ -236,6 +239,29 @@ else
     info "Skipping dependency check (--no-deps)"
 fi
 
+# ---- Initialize configuration -------------------------------------
+title "Initializing configuration"
+
+CONFIG_DIR="${HOME}/.config/subnoryx"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    ok "Config exists: $CONFIG_FILE"
+else
+    # Delegate creation to subnoryx.py so the template stays in one place.
+    if "$PYTHON_BIN" "$SUBNORYX_PY" --init-config >/dev/null 2>&1 \
+            && [[ -f "$CONFIG_FILE" ]]; then
+        ok "Created default config: $CONFIG_FILE"
+    else
+        warn "Could not auto-create config at $CONFIG_FILE"
+        info "Create it manually after install with:  subnoryx --init-config"
+        if ! "$PYTHON_BIN" -c "import httpx" >/dev/null 2>&1; then
+            info "Hint: httpx is not importable — install it first:"
+            info "      $PYTHON_BIN -m pip install --user httpx"
+        fi
+    fi
+fi
+
 # ---- Add alias to rc file -----------------------------------------
 title "Registering alias in $RC_FILE"
 
@@ -248,20 +274,17 @@ case "$(basename "${SHELL:-bash}")" in
         ;;
 esac
 
-# Ensure rc file exists
 if [[ ! -f "$RC_FILE" ]]; then
     mkdir -p "$(dirname "$RC_FILE")"
     touch "$RC_FILE"
     ok "Created $RC_FILE"
 fi
 
-# Remove any existing block first (idempotency)
 if grep -qF "$MARKER_START" "$RC_FILE"; then
     remove_alias_block "$RC_FILE"
     info "Removed previous SUBNORYX alias block"
 fi
 
-# Append the fresh block
 {
     echo ""
     echo "$MARKER_START"
@@ -310,8 +333,9 @@ fi
 echo ""
 ok "Installation complete!"
 echo ""
-echo -e "  ${BOLD}Alias:${RESET}  subnoryx  →  $PYTHON_BIN \"${SUBNORYX_PY}\""
+echo -e "  ${BOLD}Alias:${RESET}   subnoryx  →  $PYTHON_BIN \"${SUBNORYX_PY}\""
 echo -e "  ${BOLD}Rc file:${RESET} ${RC_FILE}"
+echo -e "  ${BOLD}Config:${RESET}  ${CONFIG_FILE}"
 echo ""
 echo -e "  ${BOLD}Quick start:${RESET}"
 echo "    subnoryx --man"
